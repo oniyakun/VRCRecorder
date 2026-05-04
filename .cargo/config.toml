@@ -1,0 +1,3 @@
+[env]
+SPOUT2_SDK_DIR = { value = "vendor/Spout2/SPOUTSDK/SpoutGL", relative = true }
+SPOUT2_LIB_DIR = { value = "vendor/Spout2/cmake-build/lib/Release", relative = true }
