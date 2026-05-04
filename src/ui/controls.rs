@@ -91,7 +91,7 @@ pub enum RecordingAction {
     Stop,
 }
 
-fn format_elapsed(d: std::time::Duration) -> String {
+pub fn format_elapsed(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     let h = secs / 3600;
     let m = (secs % 3600) / 60;

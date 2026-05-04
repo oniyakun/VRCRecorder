@@ -1,4 +1,5 @@
 use glow::HasContext;
+use std::sync::mpsc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -7,12 +8,18 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::config::AppConfig;
+use crate::osc::OscReceiver;
 use crate::record::RecordingPipeline;
 use crate::render::gl_context::GlState;
 use crate::render::texture;
 use crate::spout::receiver::{list_senders, SpoutStream};
-use crate::ui::controls::{RecordingAction, RecordingControls};
+use crate::ui::controls::{format_elapsed, RecordingAction, RecordingControls};
 use crate::ui::egui_state::EguiState;
+
+enum OscAction {
+    StartRecording,
+    StopRecording,
+}
 
 pub struct App {
     config: AppConfig,
@@ -26,11 +33,20 @@ pub struct App {
 
     recording_pipeline: RecordingPipeline,
     recording_controls: RecordingControls,
+
+    osc_receiver: Option<OscReceiver>,
+    osc_rx: Option<mpsc::Receiver<OscAction>>,
+    osc_last_enabled: bool,
+    osc_last_port: String,
+    osc_last_address: String,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
         let recording_pipeline = RecordingPipeline::new(config.output_dir.clone());
+        let osc_enabled = config.osc_enabled;
+        let osc_port = config.osc_port.clone();
+        let osc_address = config.osc_record_address.clone();
 
         Self {
             config,
@@ -41,6 +57,11 @@ impl App {
             spout_tex: None,
             recording_pipeline,
             recording_controls: RecordingControls::new(),
+            osc_receiver: None,
+            osc_rx: None,
+            osc_last_enabled: osc_enabled,
+            osc_last_port: osc_port,
+            osc_last_address: osc_address,
         }
     }
 
@@ -66,10 +87,111 @@ impl App {
         self.spout_stream = Some(stream);
     }
 
+    fn sync_osc(&mut self) {
+        let enabled = self.config.osc_enabled;
+        let port = self.config.osc_port.clone();
+        let address = self.config.osc_record_address.clone();
+
+        if enabled == self.osc_last_enabled
+            && port == self.osc_last_port
+            && address == self.osc_last_address
+        {
+            return;
+        }
+
+        // Stop existing receiver
+        if let Some(mut receiver) = self.osc_receiver.take() {
+            receiver.stop();
+        }
+
+        if enabled {
+            let port_num: u16 = match port.parse() {
+                Ok(p) => p,
+                Err(_) => {
+                    log::error!("Invalid OSC port: {port}");
+                    return;
+                }
+            };
+
+            let (tx, rx) = mpsc::channel::<OscAction>();
+            let addr_clone = address.clone();
+            match OscReceiver::start(port_num, move |msg| {
+                if msg.address == addr_clone {
+                    let is_start = match msg.value {
+                        crate::osc::OscValue::Int(v) => v != 0,
+                        crate::osc::OscValue::Bool(v) => v,
+                        crate::osc::OscValue::Float(v) => v > 0.5,
+                    };
+                    let action = if is_start {
+                        OscAction::StartRecording
+                    } else {
+                        OscAction::StopRecording
+                    };
+                    let _ = tx.send(action);
+                }
+            }) {
+                Ok(receiver) => {
+                    self.osc_receiver = Some(receiver);
+                    self.osc_rx = Some(rx);
+                    log::info!("OSC started: port={port}, address={address}");
+                }
+                Err(e) => {
+                    log::error!("Failed to start OSC: {e}");
+                }
+            }
+        }
+
+        self.osc_last_enabled = enabled;
+        self.osc_last_port = port;
+        self.osc_last_address = address;
+    }
+
+    /// Process any pending OSC actions from the background thread.
+    fn process_osc_actions(&mut self) {
+        if let Some(ref rx) = self.osc_rx {
+            while let Ok(action) = rx.try_recv() {
+                let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
+                match action {
+                    OscAction::StartRecording => {
+                        if !self.recording_controls.recording {
+                            self.send_start_camera_osc();
+                            let (w, h) = self
+                                .spout_stream
+                                .as_ref()
+                                .and_then(|s| s.info.as_ref())
+                                .map(|i| (i.width, i.height))
+                                .unwrap_or((1920, 1080));
+                            if let Some(gl) = gl {
+                                let _ = self.recording_pipeline.start(&gl, w, h);
+                                self.recording_controls.on_start();
+                                log::info!("Recording started via OSC");
+                            }
+                        }
+                    }
+                    OscAction::StopRecording => {
+                        if self.recording_controls.recording {
+                            if let Some(gl) = gl {
+                                let _ = self.recording_pipeline.stop(&gl);
+                            }
+                            self.recording_controls.on_stop();
+                            log::info!("Recording stopped via OSC");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn render_frame(&mut self) {
         if self.window.is_none() || self.gl_state.is_none() || self.egui_state.is_none() {
             return;
         }
+
+        // Sync OSC state with config
+        self.sync_osc();
+
+        // Process OSC messages
+        self.process_osc_actions();
 
         let gl_arc = self
             .gl_state
@@ -153,9 +275,32 @@ impl App {
                 // Bottom recording bar
                 egui::TopBottomPanel::bottom("recording_bar").show_inside(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let action = self.recording_controls.show(ui);
-                        if action != RecordingAction::None {
-                            rec_action = action;
+                        if self.recording_controls.recording {
+                            let stop_btn = egui::Button::new(
+                                egui::RichText::new("⏹ Stop").color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::DARK_RED)
+                            .min_size(egui::vec2(80.0, 32.0));
+                            if ui.add(stop_btn).clicked() {
+                                rec_action = RecordingAction::Stop;
+                            }
+                            // Red dot
+                            let time = ui.input(|i| i.time);
+                            let alpha = ((time * 3.0).sin() * 0.5 + 0.5) as f32;
+                            ui.colored_label(
+                                egui::Color32::from_rgba_premultiplied(255, 0, 0, (alpha * 255.0) as u8),
+                                "●",
+                            );
+                            ui.label(format_elapsed(self.recording_controls.elapsed));
+                        } else {
+                            let rec_btn = egui::Button::new(
+                                egui::RichText::new("● REC").color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::DARK_RED)
+                            .min_size(egui::vec2(80.0, 32.0));
+                            if ui.add(rec_btn).clicked() {
+                                rec_action = RecordingAction::Start;
+                            }
                         }
 
                         ui.with_layout(
@@ -217,6 +362,37 @@ impl App {
                                 );
                             }
                         });
+
+                        ui.separator();
+                        ui.collapsing("OSC (VRChat)", |ui| {
+                            if ui.checkbox(&mut self.config.osc_enabled, "Enable OSC receiver").changed() {
+                                self.config.save();
+                            }
+                            ui.add_enabled_ui(self.config.osc_enabled, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Listen port:");
+                                    if ui.text_edit_singleline(&mut self.config.osc_port).changed() {
+                                        self.config.save();
+                                    }
+                                });
+                                ui.label("Record address:");
+                                if ui.text_edit_singleline(&mut self.config.osc_record_address).changed() {
+                                    self.config.save();
+                                }
+                            });
+                            ui.separator();
+                            if ui.checkbox(&mut self.config.auto_camera, "Auto camera + Spout on record").changed() {
+                                self.config.save();
+                            }
+                            ui.add_enabled_ui(self.config.auto_camera, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("VRChat port:");
+                                    if ui.text_edit_singleline(&mut self.config.vrchat_port).changed() {
+                                        self.config.save();
+                                    }
+                                });
+                            });
+                        });
                     });
 
                 // Center video preview
@@ -273,17 +449,17 @@ impl App {
 
         match rec_action {
             RecordingAction::Start => {
-                let stream = self.spout_stream.as_ref();
-                if let Some(stream) = stream {
-                    if let Some(ref info) = stream.info {
-                        match self
-                            .recording_pipeline
-                            .start(&gl_arc, info.width, info.height)
-                        {
-                            Ok(()) => self.recording_controls.on_start(),
-                            Err(e) => log::error!("Failed to start recording: {e}"),
-                        }
-                    }
+                self.send_start_camera_osc();
+                let (w, h) = self
+                    .spout_stream
+                    .as_ref()
+                    .and_then(|s| s.info.as_ref())
+                    .map(|i| (i.width, i.height))
+                    .unwrap_or((1920, 1080));
+
+                match self.recording_pipeline.start(&gl_arc, w, h) {
+                    Ok(()) => self.recording_controls.on_start(),
+                    Err(e) => log::error!("Failed to start recording: {e}"),
                 }
             }
             RecordingAction::Stop => {
@@ -312,16 +488,16 @@ impl App {
                     }
                     self.recording_controls.on_stop();
                 } else {
+                    self.send_start_camera_osc();
                     let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
-                    let stream = self.spout_stream.as_ref();
-                    if let (Some(gl), Some(stream)) = (gl, stream) {
-                        if let Some(ref info) = stream.info {
-                            let _ = self
-                                .recording_pipeline
-                                .start(&gl, info.width, info.height);
-                            self.recording_controls.on_start();
-                        }
-                    }
+                    let (w, h) = self
+                        .spout_stream
+                        .as_ref()
+                        .and_then(|s| s.info.as_ref())
+                        .map(|i| (i.width, i.height))
+                        .unwrap_or((1920, 1080));
+                    let _ = self.recording_pipeline.start(&gl.unwrap(), w, h);
+                    self.recording_controls.on_start();
                 }
             }
             Key::Named(NamedKey::Escape) => {
@@ -337,12 +513,27 @@ impl App {
         }
     }
 
+    fn send_start_camera_osc(&self) {
+        if !self.config.auto_camera {
+            return;
+        }
+        let port: u16 = match self.config.vrchat_port.parse() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(true)).ok();
+        log::info!("OSC: Spout enabled");
+    }
+
     fn shutdown(&mut self) {
         if self.recording_controls.recording {
             let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
             if let Some(gl) = gl {
                 let _ = self.recording_pipeline.stop(&gl);
             }
+        }
+        if let Some(mut receiver) = self.osc_receiver.take() {
+            receiver.stop();
         }
         if let Some(egui_state) = self.egui_state.as_mut() {
             egui_state.destroy();

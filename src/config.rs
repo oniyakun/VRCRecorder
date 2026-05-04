@@ -9,6 +9,17 @@ pub struct AppConfig {
     pub window_width: u32,
     #[serde(default = "default_window_height")]
     pub window_height: u32,
+    // OSC settings
+    #[serde(default = "default_osc_enabled")]
+    pub osc_enabled: bool,
+    #[serde(default = "default_osc_port")]
+    pub osc_port: String,
+    #[serde(default = "default_osc_record_address")]
+    pub osc_record_address: String,
+    #[serde(default = "default_auto_camera")]
+    pub auto_camera: bool,
+    #[serde(default = "default_vrchat_port")]
+    pub vrchat_port: String,
 }
 
 fn default_window_width() -> u32 {
@@ -16,6 +27,21 @@ fn default_window_width() -> u32 {
 }
 fn default_window_height() -> u32 {
     720
+}
+fn default_osc_enabled() -> bool {
+    false
+}
+fn default_osc_port() -> String {
+    "9000".into()
+}
+fn default_osc_record_address() -> String {
+    "/avatar/parameters/VRCRecord".into()
+}
+fn default_auto_camera() -> bool {
+    true
+}
+fn default_vrchat_port() -> String {
+    "9000".into()
 }
 
 impl Default for AppConfig {
@@ -25,6 +51,11 @@ impl Default for AppConfig {
             output_dir: dirs::video_dir().unwrap_or_else(|| PathBuf::from(".")),
             window_width: 1280,
             window_height: 720,
+            osc_enabled: false,
+            osc_port: "9000".into(),
+            osc_record_address: "/avatar/parameters/VRCRecord".into(),
+            auto_camera: true,
+            vrchat_port: "9000".into(),
         }
     }
 }

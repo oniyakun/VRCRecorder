@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod error;
+mod osc;
 mod record;
 mod render;
 mod spout;
