@@ -1,0 +1,4 @@
+# Only track Spout2 SDK sources, not examples/docs
+Spout2/SPOUTSDK/Examples/
+Spout2/BUILD/
+Spout2/Building the libraries.pdf
