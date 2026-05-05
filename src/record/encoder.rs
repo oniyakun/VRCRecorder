@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, TrySendError};
@@ -60,11 +61,14 @@ impl FfmpegEncoder {
             args.push(vf);
         }
 
+        #[allow(non_snake_case)]
+        let CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut child = Command::new(ffmpeg_path)
             .args(&args)
             .arg(output_path)
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 

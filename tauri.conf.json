@@ -1,0 +1,21 @@
+{
+  "productName": "VRCRecorder",
+  "version": "0.2.0",
+  "identifier": "com.vrc-recorder.app",
+  "build": {
+    "frontendDist": "./frontend",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VRCRecorder",
+        "width": 1300,
+        "height": 850
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::os::windows::process::CommandExt;
 
 use crate::record::audio::AudioCapture;
 use crate::record::capture::PboReader;
@@ -248,23 +249,42 @@ impl Drop for RecordingPipeline {
     }
 }
 
-fn find_ffmpeg() -> Result<PathBuf, String> {
-    let candidates = [
-        PathBuf::from("C:/Program Files/Virtual Desktop Streamer/ffmpeg.exe"),
-        PathBuf::from("ffmpeg"),
-    ];
+pub fn find_ffmpeg_path() -> Option<PathBuf> {
+    // Bundled extraction dir (now has ffmpeg.exe + all DLLs)
+    let bundled = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vrc-recorder")
+        .join("ffmpeg.exe");
 
-    for path in &candidates {
-        let mut cmd = std::process::Command::new(path);
+    if bundled.exists() {
+        return Some(bundled);
+    }
+
+    // Fallback: VDS path
+    let vds = PathBuf::from("C:/Program Files/Virtual Desktop Streamer/ffmpeg.exe");
+    if vds.exists() {
+        return Some(vds);
+    }
+
+    None
+}
+
+fn find_ffmpeg() -> Result<PathBuf, String> {
+    #[allow(non_snake_case)]
+    let CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    if let Some(path) = find_ffmpeg_path() {
+        let mut cmd = std::process::Command::new(&path);
         cmd.arg("-version")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
         if cmd.status().is_ok() {
-            return Ok(path.clone());
+            return Ok(path);
         }
     }
 
-    Err("ffmpeg not found. Install ffmpeg and ensure it is on PATH.".into())
+    Err("ffmpeg not found. Install ffmpeg or Virtual Desktop Streamer.".into())
 }
 
 fn merge_audio_video(
@@ -301,6 +321,7 @@ fn merge_audio_video(
         .arg(output_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .creation_flags(0x08000000_u32)
         .output()
         .map_err(|e| format!("Failed to spawn ffmpeg merge: {e}"))?;
 

@@ -29,6 +29,8 @@ pub struct AppConfig {
     pub portrait_mode: bool,
     #[serde(default = "default_video_vflip")]
     pub video_vflip: bool,
+    #[serde(default = "default_preview_enabled")]
+    pub preview_enabled: bool,
 }
 
 fn default_video_bitrate() -> String {
@@ -42,6 +44,9 @@ fn default_portrait_mode() -> bool {
 }
 fn default_video_vflip() -> bool {
     false
+}
+fn default_preview_enabled() -> bool {
+    true
 }
 
 fn default_window_width() -> u32 {
@@ -82,6 +87,7 @@ impl Default for AppConfig {
             mirror_video: false,
             portrait_mode: false,
             video_vflip: false,
+            preview_enabled: true,
         }
     }
 }

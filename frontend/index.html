@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VRCRecorder</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #050505;
+            --surface: rgba(25, 25, 25, 0.7);
+            --mercury-gradient: linear-gradient(135deg, #e0e0e0 0%, #888888 50%, #444444 100%);
+            --accent: #4A90E2;
+            --danger: #FF3B30;
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --sidebar-width: 300px;
+            --easing: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background-color: var(--bg);
+            color: #fff;
+            font-family: 'Inter', -apple-system, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .app-shell {
+            width: 100vw; height: 100vh;
+            background: radial-gradient(circle at top left, #1a1a1a, #050505);
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100%;
+            background: rgba(15, 15, 15, 0.75);
+            backdrop-filter: blur(40px);
+            border-right: 1px solid var(--glass-border);
+            display: flex; flex-direction: column;
+            position: relative; z-index: 10;
+            overflow-y: auto;
+        }
+        .sidebar-header { padding: 36px 28px 20px; display: flex; align-items: center; gap: 14px; }
+        .sidebar-header .logo {
+            width: 32px; height: 32px;
+            border-radius: 10px;
+            object-fit: contain;
+        }
+        .sidebar-content { flex: 1; padding: 0 20px 20px; }
+        .setting-group { margin-bottom: 28px; }
+        .setting-label {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+            color: rgba(255,255,255,0.4); margin-bottom: 14px; font-weight: 700;
+        }
+        .setting-item {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--glass-border);
+            border-radius: 14px; padding: 12px 16px;
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 8px; cursor: pointer; font-size: 13px; font-weight: 500; gap: 10px;
+        }
+        .setting-item:hover { background: rgba(255,255,255,0.08); }
+        .setting-item.active { border-color: var(--accent); background: rgba(74,144,226,0.1); }
+        .sender-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.3); flex-shrink: 0; }
+        .setting-item.active .sender-dot { background: var(--accent); }
+        .sender-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .toggle-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 16px; background: rgba(255,255,255,0.02);
+            border-radius: 12px; margin-bottom: 6px; cursor: pointer;
+        }
+        .toggle-row:hover { background: rgba(255,255,255,0.05); }
+        .toggle-row span { font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.8); }
+        .toggle {
+            width: 36px; height: 20px; background: rgba(255,255,255,0.12);
+            border-radius: 20px; position: relative; flex-shrink: 0;
+        }
+        .toggle::after {
+            content: ''; position: absolute; width: 16px; height: 16px;
+            background: #fff; border-radius: 50%; top: 2px; left: 2px;
+        }
+        .toggle.active { background: var(--accent); }
+        .toggle.active::after { left: 18px; }
+        .text-input {
+            width: 100%; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);
+            border-radius: 10px; padding: 8px 12px; color: #fff;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            margin-bottom: 6px; outline: none;
+        }
+        .text-input:focus { border-color: var(--accent); }
+        .select-dropdown {
+            width: 100%; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);
+            border-radius: 10px; padding: 8px 12px; color: #fff;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            margin-bottom: 6px; outline: none; cursor: pointer;
+            appearance: none; -webkit-appearance: none;
+        }
+        .select-dropdown option { background: #1a1a1a; color: #fff; }
+        .preview-container {
+            flex: 1; padding: 32px; display: flex; flex-direction: column;
+            gap: 20px; position: relative; min-width: 0;
+        }
+        .preview-window {
+            flex: 1; background: #000; border-radius: 24px; position: relative; overflow: hidden;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .no-signal {
+            position: absolute; z-index: 3; color: rgba(255,255,255,0.2);
+            font-size: 18px; font-weight: 500; pointer-events: none;
+        }
+        .live-tag {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(10px);
+            padding: 8px 16px; border-radius: 100px; font-size: 11px; font-weight: 700;
+            display: flex; align-items: center; gap: 8px;
+            border: 1px solid var(--glass-border); z-index: 5;
+        }
+        .live-dot { width: 7px; height: 7px; background: var(--danger); border-radius: 50%; }
+        .meta-data {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px;
+            color: rgba(255,255,255,0.35); display: flex; gap: 28px;
+            justify-content: center;
+        }
+        .meta-data span { color: rgba(255,255,255,0.7); }
+        .dock-container { display: flex; justify-content: center; padding-bottom: 8px; }
+        .dock {
+            background: rgba(25,25,25,0.8); backdrop-filter: blur(30px);
+            padding: 12px 28px; border-radius: 100px; display: flex; align-items: center;
+            gap: 22px; border: 1px solid var(--glass-border);
+        }
+        .dock-item {
+            width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; cursor: pointer;
+            background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.7);
+            border: none; font-size: 16px;
+        }
+        .dock-item:hover { background: rgba(255,255,255,0.15); color: #fff; }
+        .dock-item.active { background: var(--accent); color: #fff; }
+        .record-btn {
+            width: 58px; height: 58px; background: #fff; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; border: none;
+            box-shadow: 0 0 20px rgba(255,255,255,0.2);
+        }
+        .record-btn-inner {
+            width: 20px; height: 20px; background: var(--danger);
+            border-radius: 50%;
+        }
+        .recording .record-btn-inner { border-radius: 4px; transform: scale(0.8); }
+        svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+        svg.ic-sm { width: 18px; height: 18px; }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <img class="logo" src="logo.png" alt="" />
+            <h2 style="font-size:15px;font-weight:500;">VRCRecorder</h2>
+        </div>
+        <div class="sidebar-content">
+            <div class="setting-group">
+                <div class="setting-label">Spout Senders</div>
+                <div id="sender-list">
+                    <div class="setting-item" style="color:rgba(255,255,255,0.3);font-style:italic;">Scanning...</div>
+                </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">Status</div>
+                <div id="status-info" style="font-size:12px;color:rgba(255,255,255,0.4);line-height:1.8;">JS OK — testing IPC...</div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">OSC (VRChat)</div>
+                <div class="toggle-row" id="osc-enable-row">
+                    <span>Enable OSC Receiver</span>
+                    <div class="toggle" id="osc-toggle"></div>
+                </div>
+                <div id="osc-details" style="display:none;">
+                    <input class="text-input" id="osc-port" placeholder="Listen port" value="9001" />
+                    <input class="text-input" id="osc-address" placeholder="Record address" value="/avatar/parameters/VRCRecord" />
+                    <div class="toggle-row" id="auto-camera-row">
+                        <span>Auto Spout on Record</span>
+                        <div class="toggle active" id="auto-camera-toggle"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">Preview</div>
+                <div class="toggle-row" id="preview-row">
+                    <span>Enable Preview</span>
+                    <div class="toggle active" id="preview-toggle"></div>
+                </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">Video</div>
+                <select class="select-dropdown" id="bitrate-select">
+                    <option value="2M">Bitrate: 2M</option>
+                    <option value="4M">Bitrate: 4M</option>
+                    <option value="8M">Bitrate: 8M</option>
+                    <option value="20M">Bitrate: 20M</option>
+                </select>
+                <div class="toggle-row" id="mirror-row"><span>Mirror (hflip)</span><div class="toggle" id="mirror-toggle"></div></div>
+                <div class="toggle-row" id="portrait-row"><span>Portrait Mode</span><div class="toggle" id="portrait-toggle"></div></div>
+                <div class="toggle-row" id="vflip-row"><span>Vertical Flip</span><div class="toggle" id="vflip-toggle"></div></div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="preview-container">
+        <div class="preview-window">
+            <div class="live-tag" id="live-tag">
+                <div class="live-dot"></div>
+                <span id="live-tag-text">PREVIEW MODE</span>
+            </div>
+            <img id="preview-img" src="" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:100%;max-height:100%;z-index:2;" />
+            <canvas id="preview-canvas" style="display:none;"></canvas>
+            <div class="no-signal" id="no-signal">No Signal</div>
+        </div>
+        <div class="meta-data">
+            <p>RESOLUTION: <span id="meta-resolution">--</span></p>
+            <p>BITRATE: <span id="meta-bitrate">2M</span></p>
+            <p>ELAPSED: <span id="meta-elapsed">00:00:00</span></p>
+        </div>
+        <div class="dock-container">
+            <div class="dock">
+                <button class="dock-item" id="dock-portrait" title="Portrait">
+                    <svg viewBox="0 0 24 24" class="ic-sm"><rect x="8" y="2" width="8" height="20" rx="1.5"/><line x1="14" y1="5" x2="14" y2="6"/></svg>
+                </button>
+                <button class="record-btn" id="recordBtn">
+                    <div class="record-btn-inner"></div>
+                </button>
+                <button class="dock-item" id="dock-mirror" title="Mirror">
+                    <svg viewBox="0 0 24 24" class="ic-sm"><rect x="2" y="4" width="9" height="16" rx="1"/><rect x="13" y="4" width="9" height="16" rx="1"/><path d="M11 8l2 2-2 2"/></svg>
+                </button>
+                <button class="dock-item" id="dock-vflip" title="Vertical Flip">
+                    <svg viewBox="0 0 24 24" class="ic-sm"><polyline points="7 8 12 4 17 8"/><line x1="12" y1="4" x2="12" y2="20"/><polyline points="7 16 12 20 17 16"/></svg>
+                </button>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>
