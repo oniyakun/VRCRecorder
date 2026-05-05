@@ -24,16 +24,3 @@ pub fn create_input_texture(gl: &glow::Context, width: u32, height: u32) -> glow
         tex
     }
 }
-
-/// Resize an existing texture. Deletes the old one and creates a new one.
-pub fn recreate_input_texture(
-    gl: &glow::Context,
-    old_tex: glow::Texture,
-    width: u32,
-    height: u32,
-) -> glow::Texture {
-    unsafe {
-        gl.delete_texture(old_tex);
-    }
-    create_input_texture(gl, width, height)
-}

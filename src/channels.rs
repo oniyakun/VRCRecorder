@@ -40,11 +40,6 @@ pub enum RenderEvent {
     RecordingElapsed {
         elapsed_secs: u64,
     },
-    PreviewFrame {
-        jpeg_base64: String,
-        width: u32,
-        height: u32,
-    },
     ConfigChanged {
         mirror_video: bool,
         portrait_mode: bool,
