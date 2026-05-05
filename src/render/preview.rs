@@ -25,6 +25,7 @@ impl PreviewRenderer {
         src_h: u32,
         mirror: bool,
         portrait: bool,
+        vflip: bool,
     ) -> Self {
         unsafe {
             // Clean up old resources (handled by caller dropping old Self first)
@@ -52,7 +53,7 @@ impl PreviewRenderer {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
 
             // Quad with transformed UVs
-            let vertices = build_quad_vertices(mirror, portrait);
+            let vertices = build_quad_vertices(mirror, portrait, vflip);
 
             let vao = gl.create_vertex_array().unwrap();
             let vbo = gl.create_buffer().unwrap();
@@ -134,13 +135,14 @@ impl PreviewRenderer {
 }
 
 /// Vertex data for a fullscreen quad with custom UV coordinates.
-fn build_quad_vertices(mirror: bool, portrait: bool) -> [f32; 24] {
-    // Apply UV transforms: mirror first (in output space), then rotate.
-    // Matches ffmpeg filter chain transpose=1,hflip in inverse direction.
+fn build_quad_vertices(mirror: bool, portrait: bool, vflip: bool) -> [f32; 24] {
+    // Inverse of ffmpeg chain transpose=1,hflip,vflip.
+    // Apply operations in reverse: vflip → hflip → transpose, all in output space.
     let transform = |u: f32, v: f32| -> (f32, f32) {
-        let u = if mirror { 1.0 - u } else { u }; // hflip in output space
+        let v = if vflip { 1.0 - v } else { v }; // vflip first (output space)
+        let u = if mirror { 1.0 - u } else { u }; // hflip (output space)
         if portrait {
-            (v, 1.0 - u) // rotate 90° CW
+            (v, 1.0 - u) // transpose=1 inverse (90° CW → source UV)
         } else {
             (u, v)
         }

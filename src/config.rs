@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub mirror_video: bool,
     #[serde(default = "default_portrait_mode")]
     pub portrait_mode: bool,
+    #[serde(default = "default_video_vflip")]
+    pub video_vflip: bool,
 }
 
 fn default_video_bitrate() -> String {
@@ -36,6 +38,9 @@ fn default_mirror_video() -> bool {
     false
 }
 fn default_portrait_mode() -> bool {
+    false
+}
+fn default_video_vflip() -> bool {
     false
 }
 
@@ -49,7 +54,7 @@ fn default_osc_enabled() -> bool {
     false
 }
 fn default_osc_port() -> String {
-    "9000".into()
+    "9001".into()
 }
 fn default_osc_record_address() -> String {
     "/avatar/parameters/VRCRecord".into()
@@ -69,13 +74,14 @@ impl Default for AppConfig {
             window_width: 1280,
             window_height: 720,
             osc_enabled: false,
-            osc_port: "9000".into(),
+            osc_port: "9001".into(),
             osc_record_address: "/avatar/parameters/VRCRecord".into(),
             auto_camera: true,
             vrchat_port: "9000".into(),
             video_bitrate: "2M".into(),
             mirror_video: false,
             portrait_mode: false,
+            video_vflip: false,
         }
     }
 }

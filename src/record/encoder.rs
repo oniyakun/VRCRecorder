@@ -23,18 +23,22 @@ impl FfmpegEncoder {
         bitrate: &str,
         mirror: bool,
         portrait: bool,
+        vflip: bool,
     ) -> Result<Self, String> {
         let size = format!("{width}x{height}");
         let rate = format!("{fps}");
 
-        // Build video filter: portrait rotation first, then mirror
-        // (so mirror flips left-right in portrait space when both are on)
+        // Build video filter: portrait rotation first, then mirror, then vflip
+        // (so mirror flips left-right in portrait space, vflip fixes back camera)
         let mut filters: Vec<&str> = Vec::new();
         if portrait {
             filters.push("transpose=1");
         }
         if mirror {
             filters.push("hflip");
+        }
+        if vflip {
+            filters.push("vflip");
         }
         let vf = filters.join(",");
 

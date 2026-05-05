@@ -37,6 +37,7 @@ impl RecordingPipeline {
         bitrate: &str,
         mirror: bool,
         portrait: bool,
+        vflip: bool,
     ) -> Result<(), String> {
         if self.encoder.is_some() {
             return Err("Already recording".into());
@@ -64,6 +65,7 @@ impl RecordingPipeline {
             bitrate,
             mirror,
             portrait,
+            vflip,
         )?;
 
         let pbo = PboReader::new(gl, width, height);

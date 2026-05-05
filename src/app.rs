@@ -20,6 +20,7 @@ use crate::ui::egui_state::EguiState;
 enum OscAction {
     StartRecording,
     StopRecording,
+    SetPortrait(bool),
 }
 
 pub struct App {
@@ -45,6 +46,7 @@ pub struct App {
     preview_renderer: Option<PreviewRenderer>,
     last_preview_mirror: bool,
     last_preview_portrait: bool,
+    last_preview_vflip: bool,
 }
 
 impl App {
@@ -71,6 +73,7 @@ impl App {
             preview_renderer: None,
             last_preview_mirror: false,
             last_preview_portrait: false,
+            last_preview_vflip: false,
         }
     }
 
@@ -138,6 +141,14 @@ impl App {
                         OscAction::StopRecording
                     };
                     let _ = tx.send(action);
+                } else if msg.address == "/usercamera/OrientationIsLandscape" {
+                    let is_landscape = match msg.value {
+                        crate::osc::OscValue::Int(v) => v != 0,
+                        crate::osc::OscValue::Bool(v) => v,
+                        crate::osc::OscValue::Float(v) => v > 0.5,
+                    };
+                    // Landscape → not portrait; portrait → portrait mode on
+                    let _ = tx.send(OscAction::SetPortrait(!is_landscape));
                 }
             }) {
                 Ok(receiver) => {
@@ -164,9 +175,9 @@ impl App {
                 match action {
                     OscAction::StartRecording => {
                         if !self.recording_controls.recording {
-                            let (w, h, bitrate, mirror, portrait) = self.recording_params();
+                            let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
                             if let Some(gl) = gl {
-                                let _ = self.recording_pipeline.start(&gl, w, h, &bitrate, mirror, portrait);
+                                let _ = self.recording_pipeline.start(&gl, w, h, &bitrate, mirror, portrait, vflip);
                                 self.recording_controls.on_start();
                                 self.send_start_camera_osc();
                                 log::info!("Recording started via OSC");
@@ -180,6 +191,13 @@ impl App {
                             }
                             self.recording_controls.on_stop();
                             log::info!("Recording stopped via OSC");
+                        }
+                    }
+                    OscAction::SetPortrait(portrait) => {
+                        if self.config.portrait_mode != portrait {
+                            self.config.portrait_mode = portrait;
+                            self.config.save();
+                            log::info!("OSC: portrait mode → {portrait}");
                         }
                     }
                 }
@@ -267,13 +285,15 @@ impl App {
         // --- Preview with mirror/portrait transforms ---
         let mirror = self.config.mirror_video;
         let portrait = self.config.portrait_mode;
+        let vflip = self.config.video_vflip;
 
         if connected {
             if let Some(ref tex) = self.spout_tex {
-                if mirror || portrait {
+                if mirror || portrait || vflip {
                     if let Some((sw, sh)) = spout_dims {
-                        let mode_changed =
-                            mirror != self.last_preview_mirror || portrait != self.last_preview_portrait;
+                        let mode_changed = mirror != self.last_preview_mirror
+                            || portrait != self.last_preview_portrait
+                            || vflip != self.last_preview_vflip;
                         let cur_dims = self
                             .preview_renderer
                             .as_ref()
@@ -285,10 +305,11 @@ impl App {
                                 old.destroy(&gl_arc);
                             }
                             self.preview_renderer = Some(PreviewRenderer::new(
-                                &gl_arc, sw, sh, mirror, portrait,
+                                &gl_arc, sw, sh, mirror, portrait, vflip,
                             ));
                             self.last_preview_mirror = mirror;
                             self.last_preview_portrait = portrait;
+                            self.last_preview_vflip = vflip;
                         }
 
                         if let Some(ref preview) = self.preview_renderer {
@@ -488,6 +509,9 @@ impl App {
                             if ui.checkbox(&mut self.config.portrait_mode, "Portrait mode (rotate 90°)").changed() {
                                 self.config.save();
                             }
+                            if ui.checkbox(&mut self.config.video_vflip, "Vertical flip (back camera fix)").changed() {
+                                self.config.save();
+                            }
                         });
                     });
 
@@ -551,9 +575,9 @@ impl App {
 
         match rec_action {
             RecordingAction::Start => {
-                let (w, h, bitrate, mirror, portrait) = self.recording_params();
+                let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
 
-                match self.recording_pipeline.start(&gl_arc, w, h, &bitrate, mirror, portrait) {
+                match self.recording_pipeline.start(&gl_arc, w, h, &bitrate, mirror, portrait, vflip) {
                     Ok(()) => {
                         self.recording_controls.on_start();
                         // Send camera OSC in background — don't delay recording start
@@ -589,8 +613,8 @@ impl App {
                     self.recording_controls.on_stop();
                 } else {
                     let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
-                    let (w, h, bitrate, mirror, portrait) = self.recording_params();
-                    let _ = self.recording_pipeline.start(&gl.unwrap(), w, h, &bitrate, mirror, portrait);
+                    let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
+                    let _ = self.recording_pipeline.start(&gl.unwrap(), w, h, &bitrate, mirror, portrait, vflip);
                     self.recording_controls.on_start();
                     self.send_start_camera_osc();
                 }
@@ -608,7 +632,7 @@ impl App {
         }
     }
 
-    fn recording_params(&self) -> (u32, u32, String, bool, bool) {
+    fn recording_params(&self) -> (u32, u32, String, bool, bool, bool) {
         let (w, h) = self
             .spout_stream
             .as_ref()
@@ -621,6 +645,7 @@ impl App {
             self.config.video_bitrate.clone(),
             self.config.mirror_video,
             self.config.portrait_mode,
+            self.config.video_vflip,
         )
     }
 
