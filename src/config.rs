@@ -20,6 +20,23 @@ pub struct AppConfig {
     pub auto_camera: bool,
     #[serde(default = "default_vrchat_port")]
     pub vrchat_port: String,
+    // Video settings
+    #[serde(default = "default_video_bitrate")]
+    pub video_bitrate: String,
+    #[serde(default = "default_mirror_video")]
+    pub mirror_video: bool,
+    #[serde(default = "default_portrait_mode")]
+    pub portrait_mode: bool,
+}
+
+fn default_video_bitrate() -> String {
+    "2M".into()
+}
+fn default_mirror_video() -> bool {
+    false
+}
+fn default_portrait_mode() -> bool {
+    false
 }
 
 fn default_window_width() -> u32 {
@@ -56,6 +73,9 @@ impl Default for AppConfig {
             osc_record_address: "/avatar/parameters/VRCRecord".into(),
             auto_camera: true,
             vrchat_port: "9000".into(),
+            video_bitrate: "2M".into(),
+            mirror_video: false,
+            portrait_mode: false,
         }
     }
 }

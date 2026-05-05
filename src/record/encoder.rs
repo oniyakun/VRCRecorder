@@ -20,23 +20,44 @@ impl FfmpegEncoder {
         width: u32,
         height: u32,
         fps: f64,
+        bitrate: &str,
+        mirror: bool,
+        portrait: bool,
     ) -> Result<Self, String> {
         let size = format!("{width}x{height}");
         let rate = format!("{fps}");
 
+        // Build video filter: portrait rotation first, then mirror
+        // (so mirror flips left-right in portrait space when both are on)
+        let mut filters: Vec<&str> = Vec::new();
+        if portrait {
+            filters.push("transpose=1");
+        }
+        if mirror {
+            filters.push("hflip");
+        }
+        let vf = filters.join(",");
+
+        let mut args: Vec<String> = vec![
+            "-y".into(),
+            "-f".into(), "rawvideo".into(),
+            "-vcodec".into(), "rawvideo".into(),
+            "-s".into(), size.clone(),
+            "-pix_fmt".into(), "rgba".into(),
+            "-r".into(), rate.clone(),
+            "-i".into(), "-".into(),
+            "-c:v".into(), "libopenh264".into(),
+            "-b:v".into(), bitrate.into(),
+            "-pix_fmt".into(), "yuv420p".into(),
+            "-allow_skip_frames".into(), "1".into(),
+        ];
+        if !vf.is_empty() {
+            args.push("-vf".into());
+            args.push(vf);
+        }
+
         let mut child = Command::new(ffmpeg_path)
-            .args([
-                "-y",
-                "-f", "rawvideo",
-                "-vcodec", "rawvideo",
-                "-s", &size,
-                "-pix_fmt", "rgba",
-                "-r", &rate,
-                "-i", "-",
-                "-c:v", "libopenh264",
-                "-pix_fmt", "yuv420p",
-                "-allow_skip_frames", "1",
-            ])
+            .args(&args)
             .arg(output_path)
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
@@ -61,8 +82,8 @@ impl FfmpegEncoder {
             })
         });
 
-        // Bounded channel: capacity 2 frames (~66MB at 4K)
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(2);
+        // Bounded channel: capacity 16 frames (~530MB at 4K)
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(16);
 
         // Background writer thread: reads from channel, writes to ffmpeg stdin
         let writer_thread = thread::Builder::new()

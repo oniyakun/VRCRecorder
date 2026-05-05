@@ -34,6 +34,9 @@ impl RecordingPipeline {
         gl: &glow::Context,
         width: u32,
         height: u32,
+        bitrate: &str,
+        mirror: bool,
+        portrait: bool,
     ) -> Result<(), String> {
         if self.encoder.is_some() {
             return Err("Already recording".into());
@@ -58,6 +61,9 @@ impl RecordingPipeline {
             width,
             height,
             fps,
+            bitrate,
+            mirror,
+            portrait,
         )?;
 
         let pbo = PboReader::new(gl, width, height);
@@ -100,6 +106,19 @@ impl RecordingPipeline {
         } else {
             None
         };
+
+        // Flush PBO pipeline: drain remaining frames before finishing encoder
+        if let Some(ref mut pbo) = self.pbo_reader {
+            for data in pbo.flush(gl) {
+                if let Some(ref mut encoder) = self.encoder {
+                    match encoder.push_frame(data) {
+                        Ok(true) => self.frame_count += 1,
+                        Ok(false) => log::warn!("Encoder full during PBO flush"),
+                        Err(e) => log::error!("Encoder error during flush: {e}"),
+                    }
+                }
+            }
+        }
 
         // Finish video encoding
         if let Some(mut encoder) = self.encoder.take() {

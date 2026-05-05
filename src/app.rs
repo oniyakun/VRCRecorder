@@ -11,6 +11,7 @@ use crate::config::AppConfig;
 use crate::osc::OscReceiver;
 use crate::record::RecordingPipeline;
 use crate::render::gl_context::GlState;
+use crate::render::preview::PreviewRenderer;
 use crate::render::texture;
 use crate::spout::receiver::{list_senders, SpoutStream};
 use crate::ui::controls::{format_elapsed, RecordingAction, RecordingControls};
@@ -40,6 +41,10 @@ pub struct App {
     osc_last_enabled: bool,
     osc_last_port: String,
     osc_last_address: String,
+
+    preview_renderer: Option<PreviewRenderer>,
+    last_preview_mirror: bool,
+    last_preview_portrait: bool,
 }
 
 impl App {
@@ -62,6 +67,10 @@ impl App {
             osc_last_enabled: false,
             osc_last_port: String::new(),
             osc_last_address: String::new(),
+
+            preview_renderer: None,
+            last_preview_mirror: false,
+            last_preview_portrait: false,
         }
     }
 
@@ -155,14 +164,9 @@ impl App {
                 match action {
                     OscAction::StartRecording => {
                         if !self.recording_controls.recording {
-                            let (w, h) = self
-                                .spout_stream
-                                .as_ref()
-                                .and_then(|s| s.info.as_ref())
-                                .map(|i| (i.width, i.height))
-                                .unwrap_or((1920, 1080));
+                            let (w, h, bitrate, mirror, portrait) = self.recording_params();
                             if let Some(gl) = gl {
-                                let _ = self.recording_pipeline.start(&gl, w, h);
+                                let _ = self.recording_pipeline.start(&gl, w, h, &bitrate, mirror, portrait);
                                 self.recording_controls.on_start();
                                 self.send_start_camera_osc();
                                 log::info!("Recording started via OSC");
@@ -247,19 +251,71 @@ impl App {
             }
         }
 
-        // --- Spout preview texture ---
+        // --- Spout info ---
         let connected = self
             .spout_stream
             .as_ref()
             .map(|s| s.connected)
             .unwrap_or(false);
 
+        let spout_dims: Option<(u32, u32)> = self
+            .spout_stream
+            .as_ref()
+            .and_then(|s| s.info.as_ref())
+            .map(|i| (i.width, i.height));
+
+        // --- Preview with mirror/portrait transforms ---
+        let mirror = self.config.mirror_video;
+        let portrait = self.config.portrait_mode;
+
         if connected {
             if let Some(ref tex) = self.spout_tex {
-                self.egui_state
-                    .as_mut()
-                    .unwrap()
-                    .update_spout_texture(*tex);
+                if mirror || portrait {
+                    if let Some((sw, sh)) = spout_dims {
+                        let mode_changed =
+                            mirror != self.last_preview_mirror || portrait != self.last_preview_portrait;
+                        let cur_dims = self
+                            .preview_renderer
+                            .as_ref()
+                            .map(|p| (p.width, p.height));
+                        let expect_dims = if portrait { (sh, sw) } else { (sw, sh) };
+
+                        if mode_changed || cur_dims != Some(expect_dims) {
+                            if let Some(old) = self.preview_renderer.take() {
+                                old.destroy(&gl_arc);
+                            }
+                            self.preview_renderer = Some(PreviewRenderer::new(
+                                &gl_arc, sw, sh, mirror, portrait,
+                            ));
+                            self.last_preview_mirror = mirror;
+                            self.last_preview_portrait = portrait;
+                        }
+
+                        if let Some(ref preview) = self.preview_renderer {
+                            preview.render(&gl_arc, *tex);
+                            self.egui_state
+                                .as_mut()
+                                .unwrap()
+                                .update_spout_texture(preview.texture());
+                        }
+                    }
+                } else {
+                    // No transform — use raw Spout texture, drop any old preview
+                    if self.preview_renderer.is_some() {
+                        if let Some(old) = self.preview_renderer.take() {
+                            old.destroy(&gl_arc);
+                        }
+                    }
+                    self.egui_state
+                        .as_mut()
+                        .unwrap()
+                        .update_spout_texture(*tex);
+                }
+            }
+        } else if self.preview_renderer.is_some() {
+            // Disconnected — clean up preview
+            if let Some(old) = self.preview_renderer.take() {
+                old.destroy(&gl_arc);
             }
         }
 
@@ -271,12 +327,6 @@ impl App {
             .filter(|s| s.connected)
             .and_then(|s| s.info.as_ref())
             .map(|i| i.name.clone());
-
-        let spout_dims: Option<(u32, u32)> = self
-            .spout_stream
-            .as_ref()
-            .and_then(|s| s.info.as_ref())
-            .map(|i| (i.width, i.height));
 
         let senders = list_senders();
 
@@ -417,12 +467,39 @@ impl App {
                                 });
                             });
                         });
+
+                        ui.separator();
+                        ui.collapsing("Video", |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Bitrate:");
+                                egui::ComboBox::from_id_salt("video_bitrate")
+                                    .selected_text(&self.config.video_bitrate)
+                                    .show_ui(ui, |ui| {
+                                        for rate in ["2M", "4M", "8M", "20M"] {
+                                            if ui.selectable_value(&mut self.config.video_bitrate, rate.to_string(), rate).changed() {
+                                                self.config.save();
+                                            }
+                                        }
+                                    });
+                            });
+                            if ui.checkbox(&mut self.config.mirror_video, "Mirror (hflip)").changed() {
+                                self.config.save();
+                            }
+                            if ui.checkbox(&mut self.config.portrait_mode, "Portrait mode (rotate 90°)").changed() {
+                                self.config.save();
+                            }
+                        });
                     });
 
                 // Center video preview
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     let available = ui.available_size();
-                    let (sw, sh) = spout_dims.unwrap_or((1920, 1080));
+                    // Use preview renderer dims if active (already transformed), else raw spout dims
+                    let (sw, sh) = if let Some(ref preview) = self.preview_renderer {
+                        (preview.width, preview.height)
+                    } else {
+                        spout_dims.unwrap_or((1920, 1080))
+                    };
 
                     if sw > 0 && sh > 0 && available.x > 0.0 && available.y > 0.0 {
                         let aspect = sw as f32 / sh as f32;
@@ -436,12 +513,13 @@ impl App {
 
                         ui.centered_and_justified(|ui| {
                             if connected && spout_tex_id.is_some() {
-                                ui.image(egui::ImageSource::Texture(
+                                // Preview texture already has mirror/portrait baked in via GPU
+                                ui.add(egui::Image::new(egui::ImageSource::Texture(
                                     egui::load::SizedTexture::new(
                                         spout_tex_id.unwrap(),
                                         egui::vec2(disp_w, disp_h),
                                     ),
-                                ));
+                                )));
                             } else {
                                 let rect = egui::Rect::from_min_size(
                                     egui::Pos2::ZERO,
@@ -473,14 +551,9 @@ impl App {
 
         match rec_action {
             RecordingAction::Start => {
-                let (w, h) = self
-                    .spout_stream
-                    .as_ref()
-                    .and_then(|s| s.info.as_ref())
-                    .map(|i| (i.width, i.height))
-                    .unwrap_or((1920, 1080));
+                let (w, h, bitrate, mirror, portrait) = self.recording_params();
 
-                match self.recording_pipeline.start(&gl_arc, w, h) {
+                match self.recording_pipeline.start(&gl_arc, w, h, &bitrate, mirror, portrait) {
                     Ok(()) => {
                         self.recording_controls.on_start();
                         // Send camera OSC in background — don't delay recording start
@@ -516,13 +589,8 @@ impl App {
                     self.recording_controls.on_stop();
                 } else {
                     let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
-                    let (w, h) = self
-                        .spout_stream
-                        .as_ref()
-                        .and_then(|s| s.info.as_ref())
-                        .map(|i| (i.width, i.height))
-                        .unwrap_or((1920, 1080));
-                    let _ = self.recording_pipeline.start(&gl.unwrap(), w, h);
+                    let (w, h, bitrate, mirror, portrait) = self.recording_params();
+                    let _ = self.recording_pipeline.start(&gl.unwrap(), w, h, &bitrate, mirror, portrait);
                     self.recording_controls.on_start();
                     self.send_start_camera_osc();
                 }
@@ -538,6 +606,22 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn recording_params(&self) -> (u32, u32, String, bool, bool) {
+        let (w, h) = self
+            .spout_stream
+            .as_ref()
+            .and_then(|s| s.info.as_ref())
+            .map(|i| (i.width, i.height))
+            .unwrap_or((1920, 1080));
+        (
+            w,
+            h,
+            self.config.video_bitrate.clone(),
+            self.config.mirror_video,
+            self.config.portrait_mode,
+        )
     }
 
     fn send_start_camera_osc(&self) {
@@ -566,6 +650,11 @@ impl App {
         }
         if let Some(egui_state) = self.egui_state.as_mut() {
             egui_state.destroy();
+        }
+        if let Some(gl) = self.gl_state.as_ref().map(|gs| gs.gl().clone()) {
+            if let Some(preview) = self.preview_renderer.take() {
+                preview.destroy(&gl);
+            }
         }
     }
 }

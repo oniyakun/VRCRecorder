@@ -135,4 +135,55 @@ impl PboReader {
             gl.delete_framebuffer(self.fbo);
         }
     }
+
+    /// Drain remaining frames from the PBO pipeline.
+    /// Call after the last end_frame, before stopping the encoder.
+    pub fn flush(&mut self, gl: &glow::Context) -> Vec<Vec<u8>> {
+        let mut frames = Vec::new();
+        if self.frame_count < 1 {
+            return frames;
+        }
+        let size = (self.width * self.height * 4) as usize;
+        unsafe {
+            // Read the read PBO (data from N-1)
+            if self.frame_count >= 2 {
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.read_index]));
+                let ptr = gl.map_buffer_range(
+                    glow::PIXEL_PACK_BUFFER,
+                    0,
+                    size as i32,
+                    glow::MAP_READ_BIT,
+                );
+                if !ptr.is_null() {
+                    let data =
+                        std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+                    if !data.is_empty() {
+                        frames.push(data);
+                    }
+                }
+                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+            }
+            // Read the write PBO (data from last begin_frame — blocks until GPU finishes)
+            {
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.write_index]));
+                let ptr = gl.map_buffer_range(
+                    glow::PIXEL_PACK_BUFFER,
+                    0,
+                    size as i32,
+                    glow::MAP_READ_BIT,
+                );
+                if !ptr.is_null() {
+                    let data =
+                        std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+                    if !data.is_empty() {
+                        frames.push(data);
+                    }
+                }
+                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+            }
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+        }
+        self.frame_count = 0;
+        frames
+    }
 }
