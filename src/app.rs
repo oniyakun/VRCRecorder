@@ -30,6 +30,7 @@ pub struct App {
 
     spout_stream: Option<SpoutStream>,
     spout_tex: Option<glow::Texture>,
+    spout_tex_dims: Option<(u32, u32)>,
 
     recording_pipeline: RecordingPipeline,
     recording_controls: RecordingControls,
@@ -44,9 +45,6 @@ pub struct App {
 impl App {
     pub fn new(config: AppConfig) -> Self {
         let recording_pipeline = RecordingPipeline::new(config.output_dir.clone());
-        let osc_enabled = config.osc_enabled;
-        let osc_port = config.osc_port.clone();
-        let osc_address = config.osc_record_address.clone();
 
         Self {
             config,
@@ -55,13 +53,15 @@ impl App {
             egui_state: None,
             spout_stream: None,
             spout_tex: None,
+            spout_tex_dims: None,
             recording_pipeline,
             recording_controls: RecordingControls::new(),
             osc_receiver: None,
             osc_rx: None,
-            osc_last_enabled: osc_enabled,
-            osc_last_port: osc_port,
-            osc_last_address: osc_address,
+            // Use values that differ from any real config so sync_osc fires on first call
+            osc_last_enabled: false,
+            osc_last_port: String::new(),
+            osc_last_address: String::new(),
         }
     }
 
@@ -75,6 +75,7 @@ impl App {
                     let gl: &glow::Context = gl_arc;
                     self.spout_tex =
                         Some(texture::create_input_texture(gl, info.width, info.height));
+                    self.spout_tex_dims = Some((info.width, info.height));
                 }
             }
             log::info!("Connected to sender: {name}");
@@ -154,7 +155,6 @@ impl App {
                 match action {
                     OscAction::StartRecording => {
                         if !self.recording_controls.recording {
-                            self.send_start_camera_osc();
                             let (w, h) = self
                                 .spout_stream
                                 .as_ref()
@@ -164,6 +164,7 @@ impl App {
                             if let Some(gl) = gl {
                                 let _ = self.recording_pipeline.start(&gl, w, h);
                                 self.recording_controls.on_start();
+                                self.send_start_camera_osc();
                                 log::info!("Recording started via OSC");
                             }
                         }
@@ -214,6 +215,29 @@ impl App {
                     let info = stream.info.as_ref().unwrap();
                     self.spout_tex =
                         Some(texture::create_input_texture(&gl_arc, info.width, info.height));
+                    self.spout_tex_dims = Some((info.width, info.height));
+                }
+
+                // Detect resolution change → restart process
+                if let Some(ref info) = stream.info {
+                    let new_dims = (info.width, info.height);
+                    if self.spout_tex_dims.is_some() && self.spout_tex_dims != Some(new_dims) {
+                        log::info!(
+                            "Spout resolution changed: {}x{} -> {}x{}, restarting...",
+                            self.spout_tex_dims.unwrap().0,
+                            self.spout_tex_dims.unwrap().1,
+                            new_dims.0,
+                            new_dims.1,
+                        );
+                        // Stop recording cleanly if active
+                        if self.recording_pipeline.is_recording() {
+                            let _ = self.recording_pipeline.stop(&gl_arc);
+                        }
+                        self.config.save();
+                        let exe = std::env::current_exe().unwrap_or_default();
+                        let _ = std::process::Command::new(&exe).spawn();
+                        std::process::exit(0);
+                    }
                 }
 
                 if let Some(ref tex) = self.spout_tex {
@@ -449,7 +473,6 @@ impl App {
 
         match rec_action {
             RecordingAction::Start => {
-                self.send_start_camera_osc();
                 let (w, h) = self
                     .spout_stream
                     .as_ref()
@@ -458,7 +481,11 @@ impl App {
                     .unwrap_or((1920, 1080));
 
                 match self.recording_pipeline.start(&gl_arc, w, h) {
-                    Ok(()) => self.recording_controls.on_start(),
+                    Ok(()) => {
+                        self.recording_controls.on_start();
+                        // Send camera OSC in background — don't delay recording start
+                        self.send_start_camera_osc();
+                    }
                     Err(e) => log::error!("Failed to start recording: {e}"),
                 }
             }
@@ -488,7 +515,6 @@ impl App {
                     }
                     self.recording_controls.on_stop();
                 } else {
-                    self.send_start_camera_osc();
                     let gl = self.gl_state.as_ref().map(|gs| gs.gl().clone());
                     let (w, h) = self
                         .spout_stream
@@ -498,6 +524,7 @@ impl App {
                         .unwrap_or((1920, 1080));
                     let _ = self.recording_pipeline.start(&gl.unwrap(), w, h);
                     self.recording_controls.on_start();
+                    self.send_start_camera_osc();
                 }
             }
             Key::Named(NamedKey::Escape) => {
@@ -521,8 +548,10 @@ impl App {
             Ok(p) => p,
             Err(_) => return,
         };
-        crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(true)).ok();
-        log::info!("OSC: Spout enabled");
+        std::thread::spawn(move || {
+            crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(true)).ok();
+            log::info!("OSC: Spout enabled");
+        });
     }
 
     fn shutdown(&mut self) {

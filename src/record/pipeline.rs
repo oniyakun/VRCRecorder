@@ -114,7 +114,15 @@ impl RecordingPipeline {
         // Merge with audio if available
         if let Some((audio_pcm, sample_rate, channels)) = audio_data {
             if let Some(ref video_path) = self.temp_video_path {
-                let ffmpeg_path = find_ffmpeg()?;
+                let ffmpeg_path = match find_ffmpeg() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::error!("{e}");
+                        self.temp_video_path = None;
+                        self.audio_capture = None;
+                        return Err(e);
+                    }
+                };
                 let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
                 let final_path = self
                     .output_dir
@@ -127,19 +135,27 @@ impl RecordingPipeline {
                     audio_pcm.len()
                 );
 
-                merge_audio_video(
+                match merge_audio_video(
                     &ffmpeg_path,
                     video_path,
                     &audio_pcm,
                     sample_rate,
                     channels,
                     &final_path,
-                )?;
-
-                // Clean up temp video
-                let _ = std::fs::remove_file(video_path);
-
-                log::info!("Recording saved to {}", final_path.display());
+                ) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(video_path);
+                        log::info!("Recording saved to {}", final_path.display());
+                    }
+                    Err(e) => {
+                        log::error!("Audio merge failed: {e}. Keeping video-only file.");
+                        // Rename temp video to final name (without audio)
+                        let _ = std::fs::remove_file(&final_path);
+                        if std::fs::rename(video_path, &final_path).is_ok() {
+                            log::info!("Video-only recording saved to {}", final_path.display());
+                        }
+                    }
+                }
             }
         } else if let Some(ref video_path) = self.temp_video_path {
             // No audio — rename temp video to final name
@@ -158,7 +174,7 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    /// Call each frame: PBO readback.
+    /// Call each frame: PBO readback → non-blocking encoder push.
     pub fn process_frame(&mut self, gl: &glow::Context, spout_tex: glow::Texture) {
         let (pbo, encoder) = match (&mut self.pbo_reader, &mut self.encoder) {
             (Some(pbo), Some(enc)) => (pbo, enc),
@@ -167,25 +183,33 @@ impl RecordingPipeline {
 
         pbo.begin_frame(gl, spout_tex);
         if let Some(rgba_data) = pbo.end_frame(gl) {
-            if let Err(e) = encoder.push_frame(&rgba_data) {
-                log::error!("Encoder error on frame {}: {e}", self.frame_count);
-            } else {
-                self.frame_count += 1;
-                // Log audio buffer size every 2 seconds (~120 frames)
-                if self.frame_count % 120 == 0 {
-                    if let Some(ref audio) = self.audio_capture {
-                        let buf_size = audio.buffer_size();
-                        if buf_size > 0 {
-                            log::info!(
-                                "Audio buffer: {} bytes (~{:.1}s)",
-                                buf_size,
-                                buf_size as f64
-                                    / (audio.sample_rate() as f64
-                                        * audio.channels() as f64
-                                        * 2.0)
-                            );
+            match encoder.push_frame(rgba_data) {
+                Ok(true) => {
+                    self.frame_count += 1;
+                    // Log audio buffer size every 2 seconds (~60 frames at 30fps)
+                    if self.frame_count % 60 == 0 {
+                        if let Some(ref audio) = self.audio_capture {
+                            let buf_size = audio.buffer_size();
+                            if buf_size > 0 {
+                                log::info!(
+                                    "Audio buffer: {} bytes (~{:.1}s)",
+                                    buf_size,
+                                    buf_size as f64
+                                        / (audio.sample_rate() as f64
+                                            * audio.channels() as f64
+                                            * 2.0)
+                                );
+                            }
                         }
                     }
+                }
+                Ok(false) => {
+                    log::warn!("Encoder full — frame {} dropped", self.frame_count);
+                    // Still count it so we don't spam the audio log
+                    self.frame_count += 1;
+                }
+                Err(e) => {
+                    log::error!("Encoder error on frame {}: {e}", self.frame_count);
                 }
             }
         }
@@ -230,39 +254,36 @@ fn merge_audio_video(
     channels: u16,
     output_path: &PathBuf,
 ) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
     let rate = format!("{sample_rate}");
 
-    let mut child = Command::new(ffmpeg_path)
+    // Write audio to a temp file to avoid stdin pipe issues
+    let audio_path = output_path.with_extension("pcm");
+    std::fs::write(&audio_path, audio_pcm)
+        .map_err(|e| format!("Failed to write temp audio: {e}"))?;
+
+    let output = std::process::Command::new(ffmpeg_path)
         .args([
             "-y",
             "-i", &video_path.to_string_lossy(),
             "-f", "s16le",
             "-ar", &rate,
             "-ac", &channels.to_string(),
-            "-i", "-",
+            "-i",
+        ])
+        .arg(&audio_path)
+        .args([
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
         ])
         .arg(output_path)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
         .map_err(|e| format!("Failed to spawn ffmpeg merge: {e}"))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(audio_pcm)
-            .map_err(|e| format!("Failed to write audio to ffmpeg: {e}"))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to wait for ffmpeg merge: {e}"))?;
+    let _ = std::fs::remove_file(&audio_path);
 
     if output.status.success() {
         Ok(())

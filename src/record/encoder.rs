@@ -1,12 +1,14 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, TrySendError};
 use std::thread;
 
 /// Encodes RGBA frames to H.264 MP4 via ffmpeg CLI pipe.
+/// Frame writes happen on a background thread to avoid blocking the main thread.
 pub struct FfmpegEncoder {
-    child: Child,
-    _stderr_thread: Option<thread::JoinHandle<()>>,
+    tx: Option<mpsc::SyncSender<Vec<u8>>>,
+    writer_thread: Option<thread::JoinHandle<std::io::Result<()>>>,
     width: u32,
     height: u32,
 }
@@ -41,7 +43,12 @@ impl FfmpegEncoder {
             .spawn()
             .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 
-        // Spawn a thread to capture ffmpeg stderr for logging
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("ffmpeg stdin not available")?;
+
+        // Stderr reader thread
         let stderr = child.stderr.take();
         let stderr_thread = stderr.map(|stderr| {
             thread::spawn(move || {
@@ -54,15 +61,48 @@ impl FfmpegEncoder {
             })
         });
 
+        // Bounded channel: capacity 2 frames (~66MB at 4K)
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(2);
+
+        // Background writer thread: reads from channel, writes to ffmpeg stdin
+        let writer_thread = thread::Builder::new()
+            .name("ffmpeg-writer".into())
+            .spawn(move || {
+                for data in rx {
+                    if stdin.write_all(&data).is_err() {
+                        break;
+                    }
+                }
+                // Close stdin to signal EOF to ffmpeg
+                drop(stdin);
+                let status = child.wait()?;
+                if !status.success() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("ffmpeg exited with: {status}"),
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to spawn writer thread: {e}"))?;
+
+        // Keep stderr thread alive
+        if let Some(t) = stderr_thread {
+            // Leak it intentionally — it dies when ffmpeg process exits
+            std::mem::forget(t);
+        }
+
         Ok(Self {
-            child,
-            _stderr_thread: stderr_thread,
+            tx: Some(tx),
+            writer_thread: Some(writer_thread),
             width,
             height,
         })
     }
 
-    pub fn push_frame(&mut self, rgba_data: &[u8]) -> Result<(), String> {
+    /// Try to enqueue a frame. If the encoder is backed up, the frame is dropped
+    /// and `false` is returned. Never blocks.
+    pub fn push_frame(&mut self, rgba_data: Vec<u8>) -> Result<bool, String> {
         let expected = (self.width * self.height * 4) as usize;
         if rgba_data.len() != expected {
             return Err(format!(
@@ -71,40 +111,41 @@ impl FfmpegEncoder {
             ));
         }
 
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or("ffmpeg stdin not available")?;
-
-        stdin
-            .write_all(rgba_data)
-            .map_err(|e| format!("Failed to write frame to ffmpeg: {e}"))?;
-
-        Ok(())
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or("Encoder not initialized")?;
+        match tx.try_send(rgba_data) {
+            Ok(()) => Ok(true),
+            Err(TrySendError::Full(_)) => Ok(false),
+            Err(TrySendError::Disconnected(_)) => Err("Encoder writer thread disconnected".into()),
+        }
     }
 
     pub fn finish(&mut self) -> Result<(), String> {
-        log::info!("Closing ffmpeg stdin and waiting for encode to finish...");
-        drop(self.child.stdin.take());
+        // Close channel to signal writer thread to finish
+        drop(self.tx.take());
 
-        let status = self
-            .child
-            .wait()
-            .map_err(|e| format!("Failed to wait for ffmpeg: {e}"))?;
-
-        if status.success() {
-            log::info!("ffmpeg finished successfully");
-            Ok(())
+        if let Some(thread) = self.writer_thread.take() {
+            match thread.join() {
+                Ok(Ok(())) => {
+                    log::info!("ffmpeg encoder finished successfully");
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(format!("ffmpeg encoder error: {e}")),
+                Err(_) => Err("ffmpeg writer thread panicked".into()),
+            }
         } else {
-            Err(format!("ffmpeg exited with status: {status}"))
+            Ok(())
         }
     }
 }
 
 impl Drop for FfmpegEncoder {
     fn drop(&mut self) {
-        drop(self.child.stdin.take());
-        let _ = self.child.kill();
+        drop(self.tx.take());
+        if let Some(thread) = self.writer_thread.take() {
+            let _ = thread.join();
+        }
     }
 }
