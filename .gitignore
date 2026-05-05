@@ -4,3 +4,4 @@ vendor/Spout2/cmake-build/
 gen/
 icons/icon.ico
 logo.ico
+.vscode/
