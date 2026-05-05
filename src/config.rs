@@ -35,6 +35,8 @@ pub struct AppConfig {
     pub mic_enabled: bool,
     #[serde(default)]
     pub mic_device: Option<String>,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 fn default_video_bitrate() -> String {
@@ -97,6 +99,7 @@ impl Default for AppConfig {
             preview_enabled: true,
             mic_enabled: true,
             mic_device: None,
+            auto_start: false,
         }
     }
 }

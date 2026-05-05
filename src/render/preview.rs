@@ -3,7 +3,7 @@ use glow::HasContext;
 use crate::render::texture::create_input_texture;
 
 /// Renders the Spout source texture into a preview texture with optional
-/// mirror (hflip) and portrait (90° CW rotation) transforms applied via
+/// mirror (hflip) and portrait (90° CCW rotation) transforms applied via
 /// GPU vertex UV manipulation.
 pub struct PreviewRenderer {
     vao: glow::VertexArray,
@@ -142,7 +142,7 @@ fn build_quad_vertices(mirror: bool, portrait: bool, vflip: bool) -> [f32; 24] {
         let v = if vflip { 1.0 - v } else { v }; // vflip first (output space)
         let u = if mirror { 1.0 - u } else { u }; // hflip (output space)
         if portrait {
-            (v, 1.0 - u) // transpose=1 inverse (90° CW → source UV)
+            (1.0 - v, u) // transpose=2 inverse (90° CCW → source UV)
         } else {
             (u, v)
         }

@@ -33,7 +33,7 @@ impl FfmpegEncoder {
         // (so mirror flips left-right in portrait space, vflip fixes back camera)
         let mut filters: Vec<&str> = Vec::new();
         if portrait {
-            filters.push("transpose=1");
+            filters.push("transpose=2");
         }
         if mirror {
             filters.push("hflip");

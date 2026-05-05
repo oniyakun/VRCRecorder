@@ -14,6 +14,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItem};
+use tauri::tray::TrayIconBuilder;
 
 use channels::{RenderCommand, RenderEvent};
 use config::AppConfig;
@@ -91,8 +93,11 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let preview_enabled = config.preview_enabled;
     let mic_enabled = config.mic_enabled;
     let mic_device = config.mic_device.clone();
+    let auto_start = config.auto_start;
+    let old_auto_start;
     let osc_changed = {
         let old = state.config.lock().unwrap();
+        old_auto_start = old.auto_start;
         old.osc_enabled != config.osc_enabled
             || old.osc_port != config.osc_port
             || old.osc_record_address != config.osc_record_address
@@ -116,6 +121,10 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
 
     if osc_changed {
         sync_osc(&state);
+    }
+
+    if auto_start != old_auto_start {
+        let _ = apply_auto_start(auto_start);
     }
 
     Ok(())
@@ -145,6 +154,11 @@ fn get_stream_port(state: tauri::State<AppState>) -> u16 {
 #[tauri::command]
 fn list_mic_devices() -> Vec<String> {
     crate::record::mic::list_input_devices()
+}
+
+#[tauri::command]
+fn set_auto_start(enable: bool) -> Result<(), String> {
+    apply_auto_start(enable)
 }
 
 // ===== OSC Management =====
@@ -204,6 +218,47 @@ fn sync_osc(state: &AppState) {
     }
 }
 
+// ===== Auto-start Registry =====
+
+fn apply_auto_start(enable: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let exe = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
+    let exe_path = exe.to_string_lossy();
+    #[allow(non_snake_case)]
+    let CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    if enable {
+        std::process::Command::new("reg")
+            .args([
+                "add",
+                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "VRCRecorder",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &exe_path,
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("Failed to set auto-start: {e}"))?;
+    } else {
+        std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "VRCRecorder",
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("Failed to remove auto-start: {e}"))?;
+    }
+    Ok(())
+}
+
 // ===== Entry Point =====
 
 fn main() {
@@ -212,6 +267,11 @@ fn main() {
     let _ = bundle::extract();
 
     let config = AppConfig::load();
+
+    // Refresh auto-start registry key on every launch if enabled
+    if config.auto_start {
+        let _ = apply_auto_start(true);
+    }
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<RenderCommand>();
     let (event_tx, event_rx) = mpsc::channel::<RenderEvent>();
@@ -246,8 +306,63 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            // --- System tray icon ---
+            let logo_rgba = image::load_from_memory(include_bytes!("../logo.png"))
+                .expect("Failed to load tray icon")
+                .to_rgba8();
+            let (icon_w, icon_h) = logo_rgba.dimensions();
+            let icon = tauri::image::Image::new_owned(logo_rgba.into_raw(), icon_w, icon_h);
+
+            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)
+                .expect("Failed to create Show menu item");
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+                .expect("Failed to create Quit menu item");
+            let menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .item(&quit_item)
+                .build()
+                .expect("Failed to build tray menu");
+
+            TrayIconBuilder::new()
+                .icon(icon)
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)
+                .expect("Failed to build tray icon");
+
             sync_osc(&*app.state::<AppState>());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -260,6 +375,7 @@ fn main() {
             poll_events,
             get_stream_port,
             list_mic_devices,
+            set_auto_start,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VRCRecorder");

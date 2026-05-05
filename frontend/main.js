@@ -224,6 +224,12 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
+    $('autostart-row').addEventListener('click', function() {
+        if (!state.config) return;
+        state.config.auto_start = toggleEl('autostart-toggle');
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
     $('preview-row').addEventListener('click', function() {
         if (!state.config) return;
         state.config.preview_enabled = toggleEl('preview-toggle');
@@ -282,6 +288,7 @@
         setToggle('vflip-toggle', cfg.video_vflip);
         setToggle('dock-vflip', cfg.video_vflip);
         setToggle('preview-toggle', cfg.preview_enabled !== false);
+        setToggle('autostart-toggle', cfg.auto_start === true);
         setToggle('mic-toggle', cfg.mic_enabled);
         $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
         $('mic-select').value = cfg.mic_device || '';
