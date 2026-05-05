@@ -10,8 +10,8 @@
     "windows": [
       {
         "title": "VRCRecorder",
-        "width": 1300,
-        "height": 850
+        "width": 1200,
+        "height": 700
       }
     ],
     "security": {

@@ -4,8 +4,7 @@ use std::path::PathBuf;
 static EMBEDDED_FFMPEG: &[u8] = include_bytes!(env!("FFMPEG_EXE_PATH"));
 
 /// Embedded Spout.dll bytes (loaded at compile time).
-static EMBEDDED_SPOUT: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/target/release/Spout.dll"));
+static EMBEDDED_SPOUT: &[u8] = include_bytes!(env!("SPOUT_DLL_PATH"));
 
 /// FFmpeg shared libraries that ffmpeg.exe depends on.
 const FFMPEG_DLLS: &[(&str, &[u8])] = &[
@@ -53,18 +52,18 @@ pub fn extract() -> Option<PathBuf> {
         log::info!("Extracted Spout.dll to {}", spout_path.display());
     }
 
-    // Add extraction dir to DLL search path so Windows finds the ffmpeg DLLs + Spout.dll
+    // Add extraction dir to DLL search path for delay-load (Spout.dll)
     unsafe {
         use std::os::windows::ffi::OsStrExt;
         unsafe extern "system" {
-            fn AddDllDirectory(lpPathName: *const u16) -> *mut std::ffi::c_void;
+            fn SetDllDirectoryW(lpPathName: *const u16) -> i32;
         }
         let wide: Vec<u16> = dir
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let _cookie = AddDllDirectory(wide.as_ptr());
+        SetDllDirectoryW(wide.as_ptr());
     }
 
     log::info!("All bundled files extracted to {}", dir.display());

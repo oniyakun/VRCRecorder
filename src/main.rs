@@ -89,6 +89,8 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let portrait = config.portrait_mode;
     let vflip = config.video_vflip;
     let preview_enabled = config.preview_enabled;
+    let mic_enabled = config.mic_enabled;
+    let mic_device = config.mic_device.clone();
     let osc_changed = {
         let old = state.config.lock().unwrap();
         old.osc_enabled != config.osc_enabled
@@ -108,6 +110,8 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         portrait,
         vflip,
         preview_enabled,
+        mic_enabled,
+        mic_device,
     });
 
     if osc_changed {
@@ -136,6 +140,11 @@ fn poll_events(state: tauri::State<AppState>) -> Result<Vec<RenderEvent>, String
 #[tauri::command]
 fn get_stream_port(state: tauri::State<AppState>) -> u16 {
     state.mjpeg_port
+}
+
+#[tauri::command]
+fn list_mic_devices() -> Vec<String> {
+    crate::record::mic::list_input_devices()
 }
 
 // ===== OSC Management =====
@@ -250,6 +259,7 @@ fn main() {
             update_config,
             poll_events,
             get_stream_port,
+            list_mic_devices,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VRCRecorder");

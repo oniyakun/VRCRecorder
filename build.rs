@@ -45,6 +45,11 @@ fn main() {
         let _ = std::fs::create_dir_all(spout_dest.parent().unwrap());
         let _ = std::fs::copy(&spout_src, &spout_dest);
     }
+    // Set env var for bundle.rs to find the Spout.dll (absolute path needed for include_bytes!)
+    let spout_abs = spout_dest.canonicalize().unwrap_or_else(|_| {
+        std::env::current_dir().unwrap().join(&spout_dest)
+    });
+    println!("cargo:rustc-env=SPOUT_DLL_PATH={}", spout_abs.display());
     // Also set ffmpeg path and all DLL paths
     let ffmpeg_path = std::path::PathBuf::from("C:/Program Files/Virtual Desktop Streamer/ffmpeg.exe");
     if ffmpeg_path.exists() {

@@ -13,6 +13,8 @@ pub enum RenderCommand {
         portrait: bool,
         vflip: bool,
         preview_enabled: bool,
+        mic_enabled: bool,
+        mic_device: Option<String>,
     },
     UpdateOrientation {
         is_landscape: bool,
@@ -45,6 +47,7 @@ pub enum RenderEvent {
         portrait_mode: bool,
         video_vflip: bool,
         preview_enabled: bool,
+        mic_enabled: bool,
     },
     Error {
         message: String,

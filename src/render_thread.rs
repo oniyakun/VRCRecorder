@@ -77,6 +77,7 @@ struct RenderState {
 
     // Periodic emit
     last_elapsed_emit: Option<Instant>,
+    last_mic_check: Option<Instant>,
 }
 
 impl RenderState {
@@ -111,6 +112,7 @@ impl RenderState {
             last_sender_scan: None,
             last_sender_list: Vec::new(),
             last_elapsed_emit: None,
+            last_mic_check: None,
         }
     }
 
@@ -123,12 +125,14 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled } => {
+                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device } => {
                     self.config.video_bitrate = bitrate;
                     self.config.mirror_video = mirror;
                     self.config.portrait_mode = portrait;
                     self.config.video_vflip = vflip;
                     self.config.preview_enabled = preview_enabled;
+                    self.config.mic_enabled = mic_enabled;
+                    self.config.mic_device = mic_device;
                 }
                 RenderCommand::UpdateOrientation { is_landscape } => {
                     let portrait = !is_landscape;
@@ -141,6 +145,7 @@ impl RenderState {
                             portrait_mode: self.config.portrait_mode,
                             video_vflip: self.config.video_vflip,
                             preview_enabled: self.config.preview_enabled,
+                            mic_enabled: self.config.mic_enabled,
                         });
                     }
                 }
@@ -225,13 +230,18 @@ impl RenderState {
                 portrait_mode: self.config.portrait_mode,
                 video_vflip: self.config.video_vflip,
                 preview_enabled: self.config.preview_enabled,
+                mic_enabled: self.config.mic_enabled,
             });
         }
         // Send camera OSC in background
         self.send_camera_osc();
         let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
         if let Some(gl) = self.gl.as_ref() {
-            match self.recording_pipeline.start(gl, w, h, &bitrate, mirror, portrait, vflip) {
+            match self.recording_pipeline.start(
+                gl, w, h, &bitrate, mirror, portrait, vflip,
+                self.config.mic_enabled,
+                self.config.mic_device.as_deref(),
+            ) {
                 Ok(()) => {
                     self.recording = true;
                     self.recording_start = Some(Instant::now());
@@ -467,6 +477,19 @@ impl RenderState {
         if let Some(ref tex) = self.spout_tex {
             self.recording_pipeline.process_frame(gl, *tex);
         }
+
+        // Periodic mic device change check (every 2s)
+        let now = Instant::now();
+        if self.config.mic_enabled {
+            if let Some(last) = self.last_mic_check {
+                if (now - last).as_secs() >= 2 {
+                    self.recording_pipeline.check_mic_device();
+                    self.last_mic_check = Some(now);
+                }
+            } else {
+                self.last_mic_check = Some(now);
+            }
+        }
     }
 
     fn scan_senders(&mut self) {
@@ -482,7 +505,20 @@ impl RenderState {
             let _ = self.event_tx.send(RenderEvent::SenderListUpdated {
                 senders: senders.clone(),
             });
-            self.last_sender_list = senders;
+            self.last_sender_list = senders.clone();
+        }
+
+        // Auto-connect to first available sender if not already connected
+        if self.spout_stream.is_none() && !senders.is_empty() {
+            // Try saved last_sender first, otherwise first in list
+            let target = self
+                .config
+                .last_sender
+                .clone()
+                .filter(|n| senders.contains(n))
+                .unwrap_or_else(|| senders[0].clone());
+            log::info!("Auto-connecting to sender: {target}");
+            self.connect_sender(&target);
         }
         self.last_sender_scan = Some(now);
     }

@@ -45,6 +45,17 @@
             display: flex; flex-direction: column;
             position: relative; z-index: 10;
             overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.15) transparent;
+        }
+        .sidebar::-webkit-scrollbar { width: 6px; }
+        .sidebar::-webkit-scrollbar-track { background: transparent; }
+        .sidebar::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.12);
+            border-radius: 3px;
+        }
+        .sidebar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.25);
         }
         .sidebar-header { padding: 36px 28px 20px; display: flex; align-items: center; gap: 14px; }
         .sidebar-header .logo {
@@ -189,7 +200,18 @@
                         <span>Auto Spout on Record</span>
                         <div class="toggle active" id="auto-camera-toggle"></div>
                     </div>
+                    <input class="text-input" id="osc-send-port" placeholder="Send port (to VRChat)" value="9000" />
                 </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">Microphone</div>
+                <div class="toggle-row" id="mic-row">
+                    <span>Enable Microphone</span>
+                    <div class="toggle" id="mic-toggle"></div>
+                </div>
+                <select class="select-dropdown" id="mic-select">
+                    <option value="">Default Device</option>
+                </select>
             </div>
             <div class="setting-group">
                 <div class="setting-label">Preview</div>

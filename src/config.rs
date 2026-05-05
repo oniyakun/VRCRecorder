@@ -31,6 +31,10 @@ pub struct AppConfig {
     pub video_vflip: bool,
     #[serde(default = "default_preview_enabled")]
     pub preview_enabled: bool,
+    #[serde(default = "default_mic_enabled")]
+    pub mic_enabled: bool,
+    #[serde(default)]
+    pub mic_device: Option<String>,
 }
 
 fn default_video_bitrate() -> String {
@@ -48,6 +52,9 @@ fn default_video_vflip() -> bool {
 fn default_preview_enabled() -> bool {
     true
 }
+fn default_mic_enabled() -> bool {
+    true
+}
 
 fn default_window_width() -> u32 {
     1280
@@ -56,7 +63,7 @@ fn default_window_height() -> u32 {
     720
 }
 fn default_osc_enabled() -> bool {
-    false
+    true
 }
 fn default_osc_port() -> String {
     "9001".into()
@@ -78,7 +85,7 @@ impl Default for AppConfig {
             output_dir: dirs::video_dir().unwrap_or_else(|| PathBuf::from(".")),
             window_width: 1280,
             window_height: 720,
-            osc_enabled: false,
+            osc_enabled: true,
             osc_port: "9001".into(),
             osc_record_address: "/avatar/parameters/VRCRecord".into(),
             auto_camera: true,
@@ -88,6 +95,8 @@ impl Default for AppConfig {
             portrait_mode: false,
             video_vflip: false,
             preview_enabled: true,
+            mic_enabled: true,
+            mic_device: None,
         }
     }
 }

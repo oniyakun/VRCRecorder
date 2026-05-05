@@ -106,6 +106,7 @@
                 setToggle('vflip-toggle', d.video_vflip);
                 setToggle('dock-vflip', d.video_vflip);
                 setToggle('preview-toggle', d.preview_enabled);
+                setToggle('mic-toggle', d.mic_enabled);
                 if (d.preview_enabled) startPreview(); else stopPreview();
                 break;
 
@@ -193,6 +194,36 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
+    // Mic controls
+    function loadMicDevices() {
+        invoke('list_mic_devices').then(function(devices) {
+            var sel = $('mic-select');
+            var current = sel.value;
+            sel.innerHTML = '<option value="">Default Device</option>';
+            (devices || []).forEach(function(d) {
+                var opt = document.createElement('option');
+                opt.value = d;
+                opt.textContent = d;
+                sel.appendChild(opt);
+            });
+            sel.value = current;
+        }).catch(function() {});
+    }
+    loadMicDevices();
+
+    $('mic-row').addEventListener('click', function() {
+        if (!state.config) return;
+        state.config.mic_enabled = toggleEl('mic-toggle');
+        $('mic-select').style.display = state.config.mic_enabled ? '' : 'none';
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
+    $('mic-select').addEventListener('change', function() {
+        if (!state.config) return;
+        state.config.mic_device = this.value || null;
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
     $('preview-row').addEventListener('click', function() {
         if (!state.config) return;
         state.config.preview_enabled = toggleEl('preview-toggle');
@@ -217,6 +248,11 @@
         state.config.osc_port = this.value;
         invoke('update_config', { config: state.config }).catch(function() {});
     });
+    $('osc-send-port').addEventListener('change', function() {
+        if (!state.config) return;
+        state.config.vrchat_port = this.value;
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
     $('osc-address').addEventListener('change', function() {
         if (!state.config) return;
         state.config.osc_record_address = this.value;
@@ -235,6 +271,7 @@
         setToggle('osc-toggle', cfg.osc_enabled);
         $('osc-details').style.display = cfg.osc_enabled ? 'block' : 'none';
         $('osc-port').value = cfg.osc_port || '9001';
+        $('osc-send-port').value = cfg.vrchat_port || '9000';
         $('osc-address').value = cfg.osc_record_address || '/avatar/parameters/VRCRecord';
         setToggle('auto-camera-toggle', cfg.auto_camera !== false);
         $('bitrate-select').value = cfg.video_bitrate || '2M';
@@ -245,6 +282,9 @@
         setToggle('vflip-toggle', cfg.video_vflip);
         setToggle('dock-vflip', cfg.video_vflip);
         setToggle('preview-toggle', cfg.preview_enabled !== false);
+        setToggle('mic-toggle', cfg.mic_enabled);
+        $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
+        $('mic-select').value = cfg.mic_device || '';
         $('meta-bitrate').textContent = cfg.video_bitrate || '2M';
 
         // Start or skip preview based on saved config
