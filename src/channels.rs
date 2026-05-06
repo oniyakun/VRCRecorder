@@ -15,6 +15,7 @@ pub enum RenderCommand {
         preview_enabled: bool,
         mic_enabled: bool,
         mic_device: Option<String>,
+        auto_stop_camera: bool,
     },
     UpdateOrientation {
         is_landscape: bool,

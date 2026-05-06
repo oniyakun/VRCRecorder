@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,6 +27,7 @@ pub fn spawn(
     event_tx: mpsc::Sender<RenderEvent>,
     preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     preview_dims: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+    is_recording: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("render-thread".into())
@@ -34,7 +36,7 @@ pub fn spawn(
                 .with_any_thread(true)
                 .build()
                 .expect("Failed to create render event loop");
-            let mut state = RenderState::new(config, cmd_rx, event_tx, preview_buf, preview_dims);
+            let mut state = RenderState::new(config, cmd_rx, event_tx, preview_buf, preview_dims, is_recording);
             let _ = event_loop.run_app(&mut state);
         })
         .expect("Failed to spawn render thread")
@@ -66,6 +68,7 @@ struct RenderState {
     // Recording
     recording_pipeline: RecordingPipeline,
     recording: bool,
+    is_recording: Arc<AtomicBool>,
     recording_start: Option<Instant>,
 
     // Preview delivery
@@ -87,6 +90,7 @@ impl RenderState {
         event_tx: mpsc::Sender<RenderEvent>,
         preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
         preview_dims_shared: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+        is_recording: Arc<AtomicBool>,
     ) -> Self {
         let output_dir = config.output_dir.clone();
         Self {
@@ -107,6 +111,7 @@ impl RenderState {
             last_preview_vflip: false,
             recording_pipeline: RecordingPipeline::new(output_dir),
             recording: false,
+            is_recording,
             recording_start: None,
             last_preview_sent: None,
             last_sender_scan: None,
@@ -125,7 +130,7 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device } => {
+                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera } => {
                     self.config.video_bitrate = bitrate;
                     self.config.mirror_video = mirror;
                     self.config.portrait_mode = portrait;
@@ -133,6 +138,7 @@ impl RenderState {
                     self.config.preview_enabled = preview_enabled;
                     self.config.mic_enabled = mic_enabled;
                     self.config.mic_device = mic_device;
+                    self.config.auto_stop_camera = auto_stop_camera;
                 }
                 RenderCommand::UpdateOrientation { is_landscape } => {
                     let portrait = !is_landscape;
@@ -244,6 +250,7 @@ impl RenderState {
             ) {
                 Ok(()) => {
                     self.recording = true;
+                    self.is_recording.store(true, Ordering::Relaxed);
                     self.recording_start = Some(Instant::now());
                     let _ = self.event_tx.send(RenderEvent::RecordingStarted);
                     log::info!("Recording started");
@@ -262,7 +269,9 @@ impl RenderState {
             let _ = self.recording_pipeline.stop(gl);
         }
         self.recording = false;
+        self.is_recording.store(false, Ordering::Relaxed);
         self.recording_start = None;
+        self.send_camera_stop_osc();
         let _ = self.event_tx.send(RenderEvent::RecordingStopped {
             final_path: None,
         });
@@ -271,13 +280,22 @@ impl RenderState {
 
     fn send_camera_osc(&self) {
         if !self.config.auto_camera { return; }
+        self.send_spout_streaming_osc(true);
+    }
+
+    fn send_camera_stop_osc(&self) {
+        if !self.config.auto_stop_camera { return; }
+        self.send_spout_streaming_osc(false);
+    }
+
+    fn send_spout_streaming_osc(&self, enabled: bool) {
         let port: u16 = match self.config.vrchat_port.parse() {
             Ok(p) => p,
             Err(_) => return,
         };
         std::thread::spawn(move || {
-            crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(true)).ok();
-            log::info!("OSC: Spout enabled");
+            crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(enabled)).ok();
+            log::info!("OSC: Spout {}", if enabled { "enabled" } else { "disabled" });
         });
     }
 

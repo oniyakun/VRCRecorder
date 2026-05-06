@@ -14,10 +14,10 @@ pub struct AppConfig {
     pub osc_enabled: bool,
     #[serde(default = "default_osc_port")]
     pub osc_port: String,
-    #[serde(default = "default_osc_record_address")]
-    pub osc_record_address: String,
     #[serde(default = "default_auto_camera")]
     pub auto_camera: bool,
+    #[serde(default = "default_auto_stop_camera")]
+    pub auto_stop_camera: bool,
     #[serde(default = "default_vrchat_port")]
     pub vrchat_port: String,
     // Video settings
@@ -35,8 +35,8 @@ pub struct AppConfig {
     pub mic_enabled: bool,
     #[serde(default)]
     pub mic_device: Option<String>,
-    #[serde(default)]
-    pub auto_start: bool,
+    #[serde(default = "default_steamvr_overlay")]
+    pub steamvr_overlay: bool,
 }
 
 fn default_video_bitrate() -> String {
@@ -57,6 +57,9 @@ fn default_preview_enabled() -> bool {
 fn default_mic_enabled() -> bool {
     true
 }
+fn default_steamvr_overlay() -> bool {
+    true
+}
 
 fn default_window_width() -> u32 {
     1280
@@ -70,10 +73,10 @@ fn default_osc_enabled() -> bool {
 fn default_osc_port() -> String {
     "9001".into()
 }
-fn default_osc_record_address() -> String {
-    "/avatar/parameters/VRCRecord".into()
-}
 fn default_auto_camera() -> bool {
+    true
+}
+fn default_auto_stop_camera() -> bool {
     true
 }
 fn default_vrchat_port() -> String {
@@ -89,8 +92,8 @@ impl Default for AppConfig {
             window_height: 720,
             osc_enabled: true,
             osc_port: "9001".into(),
-            osc_record_address: "/avatar/parameters/VRCRecord".into(),
             auto_camera: true,
+            auto_stop_camera: true,
             vrchat_port: "9000".into(),
             video_bitrate: "2M".into(),
             mirror_video: false,
@@ -99,7 +102,7 @@ impl Default for AppConfig {
             preview_enabled: true,
             mic_enabled: true,
             mic_device: None,
-            auto_start: false,
+            steamvr_overlay: true,
         }
     }
 }

@@ -1,0 +1,15 @@
+{
+    "source": "builtin",
+    "applications": [{
+        "app_key": "com.vrc-recorder.overlay",
+        "launch_type": "binary",
+        "binary_path_windows": "vrc-recorder.exe",
+        "is_dashboard_overlay": true,
+        "strings": {
+            "en_us": {
+                "name": "VRCRecorder",
+                "description": "Record Spout video streams in VR"
+            }
+        }
+    }]
+}

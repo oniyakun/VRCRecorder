@@ -180,6 +180,12 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
+    $('auto-stop-camera-row').addEventListener('click', function() {
+        if (!state.config) return;
+        state.config.auto_stop_camera = toggleEl('auto-stop-camera-toggle');
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
     $('mirror-row').addEventListener('click', function() {
         if (!state.config) return;
         state.config.mirror_video = toggleEl('mirror-toggle');
@@ -224,9 +230,9 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
-    $('autostart-row').addEventListener('click', function() {
+    $('steamvr-row').addEventListener('click', function() {
         if (!state.config) return;
-        state.config.auto_start = toggleEl('autostart-toggle');
+        state.config.steamvr_overlay = toggleEl('steamvr-toggle');
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
@@ -256,16 +262,6 @@
     });
     $('osc-send-port').addEventListener('change', function() {
         if (!state.config) return;
-        state.config.vrchat_port = this.value;
-        invoke('update_config', { config: state.config }).catch(function() {});
-    });
-    $('osc-address').addEventListener('change', function() {
-        if (!state.config) return;
-        state.config.osc_record_address = this.value;
-        invoke('update_config', { config: state.config }).catch(function() {});
-    });
-    $('bitrate-select').addEventListener('change', function() {
-        if (!state.config) return;
         state.config.video_bitrate = this.value;
         invoke('update_config', { config: state.config }).catch(function() {});
     });
@@ -278,8 +274,8 @@
         $('osc-details').style.display = cfg.osc_enabled ? 'block' : 'none';
         $('osc-port').value = cfg.osc_port || '9001';
         $('osc-send-port').value = cfg.vrchat_port || '9000';
-        $('osc-address').value = cfg.osc_record_address || '/avatar/parameters/VRCRecord';
         setToggle('auto-camera-toggle', cfg.auto_camera !== false);
+        setToggle('auto-stop-camera-toggle', cfg.auto_stop_camera !== false);
         $('bitrate-select').value = cfg.video_bitrate || '2M';
         setToggle('mirror-toggle', cfg.mirror_video);
         setToggle('dock-mirror', cfg.mirror_video);
@@ -288,7 +284,7 @@
         setToggle('vflip-toggle', cfg.video_vflip);
         setToggle('dock-vflip', cfg.video_vflip);
         setToggle('preview-toggle', cfg.preview_enabled !== false);
-        setToggle('autostart-toggle', cfg.auto_start === true);
+        setToggle('steamvr-toggle', cfg.steamvr_overlay !== false);
         setToggle('mic-toggle', cfg.mic_enabled);
         $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
         $('mic-select').value = cfg.mic_device || '';

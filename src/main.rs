@@ -9,7 +9,9 @@ mod record;
 mod render;
 mod render_thread;
 mod spout;
+mod steamvr;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -93,15 +95,7 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let preview_enabled = config.preview_enabled;
     let mic_enabled = config.mic_enabled;
     let mic_device = config.mic_device.clone();
-    let auto_start = config.auto_start;
-    let old_auto_start;
-    let osc_changed = {
-        let old = state.config.lock().unwrap();
-        old_auto_start = old.auto_start;
-        old.osc_enabled != config.osc_enabled
-            || old.osc_port != config.osc_port
-            || old.osc_record_address != config.osc_record_address
-    };
+    let auto_stop_camera = config.auto_stop_camera;
 
     {
         let mut cfg = state.config.lock().unwrap();
@@ -117,15 +111,8 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         preview_enabled,
         mic_enabled,
         mic_device,
+        auto_stop_camera,
     });
-
-    if osc_changed {
-        sync_osc(&state);
-    }
-
-    if auto_start != old_auto_start {
-        let _ = apply_auto_start(auto_start);
-    }
 
     Ok(())
 }
@@ -156,21 +143,12 @@ fn list_mic_devices() -> Vec<String> {
     crate::record::mic::list_input_devices()
 }
 
-#[tauri::command]
-fn set_auto_start(enable: bool) -> Result<(), String> {
-    apply_auto_start(enable)
-}
-
 // ===== OSC Management =====
 
 fn sync_osc(state: &AppState) {
-    let (enabled, port, address) = {
+    let (enabled, port) = {
         let cfg = state.config.lock().unwrap();
-        (
-            cfg.osc_enabled,
-            cfg.osc_port.clone(),
-            cfg.osc_record_address.clone(),
-        )
+        (cfg.osc_enabled, cfg.osc_port.clone())
     };
 
     let mut osc = state.osc_receiver.lock().unwrap();
@@ -180,23 +158,10 @@ fn sync_osc(state: &AppState) {
 
     if enabled {
         let cmd_tx = state.cmd_tx.lock().unwrap().clone();
-        let addr_clone = address.clone();
         match OscReceiver::start(
             port.parse().unwrap_or(9001),
             move |msg| {
-                if msg.address == addr_clone {
-                    let is_start = match msg.value {
-                        osc::OscValue::Int(v) => v != 0,
-                        osc::OscValue::Bool(v) => v,
-                        osc::OscValue::Float(v) => v > 0.5,
-                    };
-                    let cmd = if is_start {
-                        RenderCommand::StartRecording
-                    } else {
-                        RenderCommand::StopRecording
-                    };
-                    let _ = cmd_tx.send(cmd);
-                } else if msg.address == "/usercamera/OrientationIsLandscape" {
+                if msg.address == "/usercamera/OrientationIsLandscape" {
                     let _ = cmd_tx.send(RenderCommand::UpdateOrientation {
                         is_landscape: match msg.value {
                             osc::OscValue::Int(v) => v != 0,
@@ -218,67 +183,52 @@ fn sync_osc(state: &AppState) {
     }
 }
 
-// ===== Auto-start Registry =====
-
-fn apply_auto_start(enable: bool) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    let exe = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
-    let exe_path = exe.to_string_lossy();
-    #[allow(non_snake_case)]
-    let CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    if enable {
-        std::process::Command::new("reg")
-            .args([
-                "add",
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "VRCRecorder",
-                "/t",
-                "REG_SZ",
-                "/d",
-                &exe_path,
-                "/f",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("Failed to set auto-start: {e}"))?;
-    } else {
-        std::process::Command::new("reg")
-            .args([
-                "delete",
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "VRCRecorder",
-                "/f",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("Failed to remove auto-start: {e}"))?;
-    }
-    Ok(())
-}
-
 // ===== Entry Point =====
 
 fn main() {
-    env_logger::init();
+    // Write logs to file in cache dir for debugging
+    let log_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vrc-recorder");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("vrc-recorder.log");
+    let log_file = std::fs::File::create(&log_path)
+        .expect("Failed to create log file");
+
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .format_timestamp_millis()
+    .target(env_logger::Target::Pipe(Box::new(log_file)))
+    .init();
+
+    // Log panics
+    let log_path_clone = log_path.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log_path_clone) {
+            let _ = writeln!(f, "PANIC: {info}");
+        }
+    }));
+
+    log::info!("VRCRecorder starting, log at {}", log_path.display());
 
     let _ = bundle::extract();
 
     let config = AppConfig::load();
 
-    // Refresh auto-start registry key on every launch if enabled
-    if config.auto_start {
-        let _ = apply_auto_start(true);
-    }
-
     let (cmd_tx, cmd_rx) = mpsc::channel::<RenderCommand>();
     let (event_tx, event_rx) = mpsc::channel::<RenderEvent>();
+
+    // Recording state flag shared with SteamVR overlay thread
+    let is_recording = Arc::new(AtomicBool::new(false));
 
     // Shared preview buffer (render thread writes, protocol handler reads)
     let preview_buf = Arc::new(Mutex::new(Vec::new()));
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
+
+    // Clone before moving into render thread / setup closure
+    let is_recording_for_overlay = is_recording.clone();
 
     let render_config = config.clone();
     render_thread::spawn(
@@ -287,6 +237,7 @@ fn main() {
         event_tx,
         preview_buf.clone(),
         preview_dims.clone(),
+        is_recording.clone(),
     );
 
     // Start MJPEG streaming server
@@ -305,7 +256,7 @@ fn main() {
     };
 
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
             // --- System tray icon ---
             let logo_rgba = image::load_from_memory(include_bytes!("../logo.png"))
                 .expect("Failed to load tray icon")
@@ -356,6 +307,12 @@ fn main() {
                 .expect("Failed to build tray icon");
 
             sync_osc(&*app.state::<AppState>());
+
+            // Spawn SteamVR overlay thread (no-op if disabled in config)
+            let overlay_config = app.state::<AppState>().config.lock().unwrap().clone();
+            let overlay_cmd_tx = app.state::<AppState>().cmd_tx.lock().unwrap().clone();
+            steamvr::spawn_overlay(overlay_config, overlay_cmd_tx, is_recording_for_overlay.clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -375,7 +332,6 @@ fn main() {
             poll_events,
             get_stream_port,
             list_mic_devices,
-            set_auto_start,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VRCRecorder");
