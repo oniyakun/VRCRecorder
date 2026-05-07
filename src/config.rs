@@ -40,7 +40,7 @@ pub struct AppConfig {
 }
 
 fn default_video_bitrate() -> String {
-    "2M".into()
+    "10M".into()
 }
 fn default_mirror_video() -> bool {
     false
@@ -52,7 +52,7 @@ fn default_video_vflip() -> bool {
     false
 }
 fn default_preview_enabled() -> bool {
-    true
+    false
 }
 fn default_mic_enabled() -> bool {
     true
@@ -95,11 +95,11 @@ impl Default for AppConfig {
             auto_camera: true,
             auto_stop_camera: true,
             vrchat_port: "9000".into(),
-            video_bitrate: "2M".into(),
+            video_bitrate: "10M".into(),
             mirror_video: false,
             portrait_mode: false,
             video_vflip: false,
-            preview_enabled: true,
+            preview_enabled: false,
             mic_enabled: true,
             mic_device: None,
             steamvr_overlay: true,

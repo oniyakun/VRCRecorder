@@ -96,6 +96,7 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let mic_enabled = config.mic_enabled;
     let mic_device = config.mic_device.clone();
     let auto_stop_camera = config.auto_stop_camera;
+    let output_dir = config.output_dir.clone();
 
     {
         let mut cfg = state.config.lock().unwrap();
@@ -112,6 +113,7 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         mic_enabled,
         mic_device,
         auto_stop_camera,
+        output_dir,
     });
 
     Ok(())
@@ -136,6 +138,24 @@ fn poll_events(state: tauri::State<AppState>) -> Result<Vec<RenderEvent>, String
 #[tauri::command]
 fn get_stream_port(state: tauri::State<AppState>) -> u16 {
     state.mjpeg_port
+}
+
+#[tauri::command]
+fn select_output_dir(state: tauri::State<AppState>) -> Result<String, String> {
+    let start_dir = state.config.lock().unwrap().output_dir.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let path = rfd::FileDialog::new()
+            .set_directory(start_dir)
+            .pick_folder();
+        let _ = tx.send(path);
+    });
+
+    match rx.recv() {
+        Ok(Some(path)) => Ok(path.to_string_lossy().into_owned()),
+        Ok(None) => Err("No folder selected".into()),
+        Err(_) => Err("Dialog thread failed".into()),
+    }
 }
 
 #[tauri::command]
@@ -332,6 +352,7 @@ fn main() {
             poll_events,
             get_stream_port,
             list_mic_devices,
+            select_output_dir,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VRCRecorder");

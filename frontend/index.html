@@ -178,19 +178,44 @@
         </div>
         <div class="sidebar-content">
             <div class="setting-group">
-                <div class="setting-label">Spout Senders</div>
+                <div class="setting-label">Source</div>
                 <div id="sender-list">
                     <div class="setting-item" style="color:rgba(255,255,255,0.3);font-style:italic;">Scanning...</div>
                 </div>
             </div>
             <div class="setting-group">
-                <div class="setting-label">Status</div>
-                <div id="status-info" style="font-size:12px;color:rgba(255,255,255,0.4);line-height:1.8;">JS OK — testing IPC...</div>
+                <div class="setting-label">Preview</div>
+                <div class="toggle-row" id="preview-row">
+                    <span>Enable Preview</span>
+                    <div class="toggle" id="preview-toggle"></div>
+                </div>
             </div>
             <div class="setting-group">
-                <div class="setting-label">OSC (VRChat)</div>
+                <div class="setting-label">Video</div>
+                <select class="select-dropdown" id="bitrate-select">
+                    <option value="4M">Bitrate: 4M</option>
+                    <option value="10M">Bitrate: 10M</option>
+                    <option value="20M">Bitrate: 20M</option>
+                    <option value="40M">Bitrate: 40M</option>
+                </select>
+                <div class="toggle-row" id="mirror-row"><span>Mirror (hflip)</span><div class="toggle" id="mirror-toggle"></div></div>
+                <div class="toggle-row" id="portrait-row"><span>Portrait Mode</span><div class="toggle" id="portrait-toggle"></div></div>
+                <div class="toggle-row" id="vflip-row"><span>Vertical Flip</span><div class="toggle" id="vflip-toggle"></div></div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">Audio</div>
+                <div class="toggle-row" id="mic-row">
+                    <span>Microphone</span>
+                    <div class="toggle" id="mic-toggle"></div>
+                </div>
+                <select class="select-dropdown" id="mic-select">
+                    <option value="">Default Device</option>
+                </select>
+            </div>
+            <div class="setting-group">
+                <div class="setting-label">VRChat OSC</div>
                 <div class="toggle-row" id="osc-enable-row">
-                    <span>Enable OSC Receiver</span>
+                    <span>Enable OSC</span>
                     <div class="toggle" id="osc-toggle"></div>
                 </div>
                 <div id="osc-details" style="display:none;">
@@ -207,20 +232,10 @@
                 </div>
             </div>
             <div class="setting-group">
-                <div class="setting-label">Microphone</div>
-                <div class="toggle-row" id="mic-row">
-                    <span>Enable Microphone</span>
-                    <div class="toggle" id="mic-toggle"></div>
-                </div>
-                <select class="select-dropdown" id="mic-select">
-                    <option value="">Default Device</option>
-                </select>
-            </div>
-            <div class="setting-group">
-                <div class="setting-label">Preview</div>
-                <div class="toggle-row" id="preview-row">
-                    <span>Enable Preview</span>
-                    <div class="toggle active" id="preview-toggle"></div>
+                <div class="setting-label">Storage</div>
+                <div class="setting-item" id="output-dir-row" title="Click to change save folder">
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:rgba(255,255,255,0.6);" id="output-dir-text">...</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                 </div>
             </div>
             <div class="setting-group">
@@ -231,16 +246,8 @@
                 </div>
             </div>
             <div class="setting-group">
-                <div class="setting-label">Video</div>
-                <select class="select-dropdown" id="bitrate-select">
-                    <option value="2M">Bitrate: 2M</option>
-                    <option value="4M">Bitrate: 4M</option>
-                    <option value="8M">Bitrate: 8M</option>
-                    <option value="20M">Bitrate: 20M</option>
-                </select>
-                <div class="toggle-row" id="mirror-row"><span>Mirror (hflip)</span><div class="toggle" id="mirror-toggle"></div></div>
-                <div class="toggle-row" id="portrait-row"><span>Portrait Mode</span><div class="toggle" id="portrait-toggle"></div></div>
-                <div class="toggle-row" id="vflip-row"><span>Vertical Flip</span><div class="toggle" id="vflip-toggle"></div></div>
+                <div class="setting-label">Status</div>
+                <div id="status-info" style="font-size:12px;color:rgba(255,255,255,0.4);line-height:1.8;">JS OK — testing IPC...</div>
             </div>
         </div>
     </aside>
@@ -257,7 +264,7 @@
         </div>
         <div class="meta-data">
             <p>RESOLUTION: <span id="meta-resolution">--</span></p>
-            <p>BITRATE: <span id="meta-bitrate">2M</span></p>
+            <p>BITRATE: <span id="meta-bitrate">10M</span></p>
             <p>ELAPSED: <span id="meta-elapsed">00:00:00</span></p>
         </div>
         <div class="dock-container">

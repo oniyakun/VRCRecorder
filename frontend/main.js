@@ -153,7 +153,7 @@
         $('no-signal').style.display = 'block';
     }
 
-    if (state.config && state.config.preview_enabled !== false) {
+    if (state.config && state.config.preview_enabled === true) {
         startPreview();
     } else {
         stopPreview();
@@ -266,6 +266,25 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
+    // Folder picker
+    $('output-dir-row').addEventListener('click', function() {
+        invoke('select_output_dir').then(function(dir) {
+            state.config.output_dir = dir;
+            shortenPath(dir);
+            invoke('update_config', { config: state.config }).catch(function() {});
+        }).catch(function(e) {
+            if (e && e.toString().indexOf('No folder selected') === -1) {
+                status('Folder select error: ' + e);
+            }
+        });
+    });
+
+    function shortenPath(p) {
+        if (!p) return;
+        $('output-dir-text').textContent = p;
+        $('output-dir-text').title = p;
+    }
+
     // ---- Init ----
     invoke('get_config').then(function(cfg) {
         state.config = cfg;
@@ -276,22 +295,23 @@
         $('osc-send-port').value = cfg.vrchat_port || '9000';
         setToggle('auto-camera-toggle', cfg.auto_camera !== false);
         setToggle('auto-stop-camera-toggle', cfg.auto_stop_camera !== false);
-        $('bitrate-select').value = cfg.video_bitrate || '2M';
+        $('bitrate-select').value = cfg.video_bitrate || '10M';
         setToggle('mirror-toggle', cfg.mirror_video);
         setToggle('dock-mirror', cfg.mirror_video);
         setToggle('portrait-toggle', cfg.portrait_mode);
         setToggle('dock-portrait', cfg.portrait_mode);
         setToggle('vflip-toggle', cfg.video_vflip);
         setToggle('dock-vflip', cfg.video_vflip);
-        setToggle('preview-toggle', cfg.preview_enabled !== false);
+        setToggle('preview-toggle', cfg.preview_enabled === true);
         setToggle('steamvr-toggle', cfg.steamvr_overlay !== false);
         setToggle('mic-toggle', cfg.mic_enabled);
         $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
         $('mic-select').value = cfg.mic_device || '';
-        $('meta-bitrate').textContent = cfg.video_bitrate || '2M';
+        $('meta-bitrate').textContent = cfg.video_bitrate || '10M';
+        shortenPath(cfg.output_dir || 'Default (Videos)');
 
         // Start or skip preview based on saved config
-        if (cfg.preview_enabled !== false) {
+        if (cfg.preview_enabled === true) {
             startPreview();
         } else {
             stopPreview();

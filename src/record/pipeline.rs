@@ -35,6 +35,10 @@ impl RecordingPipeline {
         self.encoder.is_some()
     }
 
+    pub fn set_output_dir(&mut self, dir: PathBuf) {
+        self.output_dir = dir;
+    }
+
     pub fn start(
         &mut self,
         gl: &glow::Context,

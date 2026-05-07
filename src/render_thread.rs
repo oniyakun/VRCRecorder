@@ -130,7 +130,7 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera } => {
+                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera, output_dir } => {
                     let old_preview = self.config.preview_enabled;
                     self.config.video_bitrate = bitrate;
                     self.config.mirror_video = mirror;
@@ -140,6 +140,9 @@ impl RenderState {
                     self.config.mic_enabled = mic_enabled;
                     self.config.mic_device = mic_device;
                     self.config.auto_stop_camera = auto_stop_camera;
+                    self.config.output_dir = output_dir.clone();
+                    // Keep pipeline's output dir in sync
+                    self.recording_pipeline.set_output_dir(output_dir);
                     // Toggle camera Spout output when preview changed and not recording
                     if old_preview != preview_enabled && !self.recording {
                         self.send_spout_streaming_osc(preview_enabled);

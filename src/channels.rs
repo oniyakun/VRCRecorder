@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Serialize;
 
 /// Commands sent from Tauri frontend to the render thread.
@@ -16,6 +18,7 @@ pub enum RenderCommand {
         mic_enabled: bool,
         mic_device: Option<String>,
         auto_stop_camera: bool,
+        output_dir: PathBuf,
     },
     UpdateOrientation {
         is_landscape: bool,
