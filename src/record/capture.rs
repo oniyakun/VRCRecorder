@@ -65,6 +65,11 @@ impl PboReader {
                 glow::UNSIGNED_BYTE,
                 glow::PixelPackData::Slice(None),
             );
+            // Force submission of the read-pixels command to the GPU so the DMA
+            // begins immediately. Without this, the driver may hold the command
+            // in its software queue and flush()'s glMapBufferRange would return
+            // stale data because the GPU never started the transfer.
+            gl.flush();
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         }

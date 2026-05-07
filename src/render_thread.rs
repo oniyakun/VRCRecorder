@@ -131,6 +131,7 @@ impl RenderState {
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
                 RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera } => {
+                    let old_preview = self.config.preview_enabled;
                     self.config.video_bitrate = bitrate;
                     self.config.mirror_video = mirror;
                     self.config.portrait_mode = portrait;
@@ -139,6 +140,10 @@ impl RenderState {
                     self.config.mic_enabled = mic_enabled;
                     self.config.mic_device = mic_device;
                     self.config.auto_stop_camera = auto_stop_camera;
+                    // Toggle camera Spout output when preview changed and not recording
+                    if old_preview != preview_enabled && !self.recording {
+                        self.send_spout_streaming_osc(preview_enabled);
+                    }
                 }
                 RenderCommand::UpdateOrientation { is_landscape } => {
                     let portrait = !is_landscape;
@@ -600,13 +605,13 @@ impl ApplicationHandler for RenderState {
             Instant::now() + std::time::Duration::from_millis(16),
         ));
 
-        // 1. Process incoming commands
-        self.process_commands();
-
-        // 2. Spout update — returns true if a new frame was received
+        // 1. Spout update — returns true if a new frame was received
+        //    MUST run before process_commands so that when StopRecording is
+        //    processed, the latest frame has already been captured into the
+        //    PBO pipeline and flush() can drain it.
         let new_frame = self.update_spout();
 
-        // 3. Only do heavy GPU work on new frames
+        // 2. Only do heavy GPU work on new frames
         if new_frame {
             // Preview (only when enabled)
             if self.config.preview_enabled {
@@ -616,6 +621,9 @@ impl ApplicationHandler for RenderState {
             // Recording pipeline
             self.process_recording();
         }
+
+        // 3. Process incoming commands (after frame capture)
+        self.process_commands();
 
         // 4. Periodic sender scan (every 2s)
         self.scan_senders();

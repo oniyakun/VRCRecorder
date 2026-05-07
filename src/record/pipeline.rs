@@ -13,6 +13,7 @@ pub struct RecordingPipeline {
     mic_capture: Option<MicCapture>,
     output_dir: PathBuf,
     frame_count: u64,
+    dropped_count: u64,
     temp_video_path: Option<PathBuf>,
 }
 
@@ -25,6 +26,7 @@ impl RecordingPipeline {
             mic_capture: None,
             output_dir,
             frame_count: 0,
+            dropped_count: 0,
             temp_video_path: None,
         }
     }
@@ -110,6 +112,7 @@ impl RecordingPipeline {
         self.mic_capture = mic;
         self.temp_video_path = Some(temp_video);
         self.frame_count = 0;
+        self.dropped_count = 0;
 
         log::info!(
             "Recording started: {}x{}",
@@ -159,61 +162,89 @@ impl RecordingPipeline {
             }
         }
 
-        // Finish video encoding
-        if let Some(mut encoder) = self.encoder.take() {
-            log::info!("Finishing video ({} frames)", self.frame_count);
-            encoder.finish()?;
-        }
+        // Take ownership of encoder, video path, output dir for background finalization.
+        // finish() and audio merge block for seconds — must NOT run on the render thread
+        // or we lose Spout frames arriving during finalization.
+        let encoder = self.encoder.take();
+        let video_path = self.temp_video_path.take();
+        let frame_count = self.frame_count;
+        let dropped_count = self.dropped_count;
+        let output_dir = self.output_dir.clone();
 
+        // Clean up GPU resources on render thread
         if let Some(pbo) = self.pbo_reader.take() {
             pbo.destroy(gl);
         }
 
-        // Merge audio using ffmpeg (handles sync, resampling, mixing natively)
-        if let Some(ref video_path) = self.temp_video_path {
-            let ffmpeg_path = match find_ffmpeg() {
-                Ok(p) => p,
-                Err(e) => {
-                    log::error!("{e}");
-                    self.temp_video_path = None;
-                    self.audio_capture = None;
-                    return Err(e);
-                }
-            };
-            let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-            let final_path = self
-                .output_dir
-                .join(format!("VRCRecorder_{timestamp}.mp4"));
-
-            match merge_audio_video(
-                &ffmpeg_path,
-                video_path,
-                audio_data,
-                mic_data,
-                &final_path,
-            ) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(video_path);
-                    log::info!("Recording saved to {}", final_path.display());
-                }
-                Err(e) => {
-                    log::error!("Audio merge failed: {e}. Keeping video-only file.");
-                    let _ = std::fs::remove_file(&final_path);
-                    if std::fs::rename(video_path, &final_path).is_ok() {
-                        log::info!("Video-only recording saved to {}", final_path.display());
-                    }
-                }
-            }
-        } else if self.temp_video_path.is_some() {
-            // Shouldn't happen, but handle gracefully
-            log::warn!("No video path available for final output");
-        } else {
-            return Ok(());
-        }
-
+        // Reset state immediately so a new recording can start
         self.frame_count = 0;
+        self.dropped_count = 0;
         self.audio_capture = None;
         self.temp_video_path = None;
+
+        // Finalize encoding and merge audio on a background thread
+        if encoder.is_some() || video_path.is_some() {
+            std::thread::Builder::new()
+                .name("encoder-finish".into())
+                .spawn(move || {
+                    // Finish video encoding
+                    if let Some(mut enc) = encoder {
+                        log::info!(
+                            "Finishing video: {} frames queued, {} dropped ({:.1}%)",
+                            frame_count,
+                            dropped_count,
+                            if frame_count + dropped_count > 0 {
+                                (dropped_count as f64 / (frame_count + dropped_count) as f64) * 100.0
+                            } else {
+                                0.0
+                            }
+                        );
+                        if let Err(e) = enc.finish() {
+                            log::error!("Encoder finish failed: {e}");
+                            // Video file may be corrupt; keep it for debugging
+                            if let Some(ref vp) = video_path {
+                                log::info!("Partial video kept at {}", vp.display());
+                            }
+                            return;
+                        }
+                    }
+
+                    // Merge audio using ffmpeg
+                    if let Some(ref vp) = video_path {
+                        let ffmpeg_path = match find_ffmpeg() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                log::error!("{e}");
+                                return;
+                            }
+                        };
+                        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+                        let final_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
+
+                        match merge_audio_video(
+                            &ffmpeg_path,
+                            vp,
+                            audio_data,
+                            mic_data,
+                            &final_path,
+                        ) {
+                            Ok(()) => {
+                                let _ = std::fs::remove_file(vp);
+                                log::info!("Recording saved to {}", final_path.display());
+                            }
+                            Err(e) => {
+                                log::error!("Audio merge failed: {e}. Keeping video-only file.");
+                                let _ = std::fs::remove_file(&final_path);
+                                if std::fs::rename(vp, &final_path).is_ok() {
+                                    log::info!("Video-only recording saved to {}", final_path.display());
+                                }
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| format!("Failed to spawn finish thread: {e}"))?;
+        }
+
         Ok(())
     }
 
@@ -247,8 +278,8 @@ impl RecordingPipeline {
             match encoder.push_frame(rgba_data) {
                 Ok(true) => {
                     self.frame_count += 1;
-                    // Log audio buffer size every 2 seconds (~60 frames at 30fps)
-                    if self.frame_count % 60 == 0 {
+                    // Log audio buffer size every 2s (~120 frames at 60fps)
+                    if self.frame_count % 120 == 0 {
                         if let Some(ref audio) = self.audio_capture {
                             let buf_size = audio.buffer_size();
                             if buf_size > 0 {
@@ -262,12 +293,24 @@ impl RecordingPipeline {
                                 );
                             }
                         }
+                        if self.dropped_count > 0 {
+                            log::warn!(
+                                "Encoder dropped {} frames so far ({} queued)",
+                                self.dropped_count,
+                                self.frame_count
+                            );
+                        }
                     }
                 }
                 Ok(false) => {
-                    log::warn!("Encoder full — frame {} dropped", self.frame_count);
-                    // Still count it so we don't spam the audio log
-                    self.frame_count += 1;
+                    self.dropped_count += 1;
+                    if self.dropped_count % 60 == 1 {
+                        log::warn!(
+                            "Encoder full — {} frames dropped so far ({} queued)",
+                            self.dropped_count,
+                            self.frame_count
+                        );
+                    }
                 }
                 Err(e) => {
                     log::error!("Encoder error on frame {}: {e}", self.frame_count);
@@ -372,12 +415,7 @@ fn merge_audio_video(
 
     match (has_sys, has_mic) {
         (true, true) => {
-            cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:weights=1 0.5[out]"])
-                .args(["-map", "0:v"])
-                .args(["-map", "[out]"]);
-        }
-        (true, true) => {
-            // Mix system + mic via ffmpeg amix
+            // Mix system + mic; duration=first uses the first (system) audio as length anchor
             cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:weights=1 0.5[out]"])
                 .args(["-map", "0:v"])
                 .args(["-map", "[out]"]);
@@ -393,7 +431,10 @@ fn merge_audio_video(
         }
     }
 
-    cmd.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"])
+    // No -shortest: video is the authoritative length. Audio stops slightly before
+    // video (audio.stop() is called before PBO flush), so -shortest would truncate
+    // the video to match the shorter audio track.
+    cmd.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
         .arg(output_path);
 
     let output = cmd.output()

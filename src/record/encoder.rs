@@ -3,7 +3,75 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, TrySendError};
+use std::sync::OnceLock;
 use std::thread;
+
+/// Detected video encoder info.
+struct EncoderInfo {
+    codec: &'static str,
+    /// Extra args added before `-b:v` (preset, quality, etc.)
+    extra_args: Vec<&'static str>,
+}
+
+/// Detect best available H.264 encoder. Called once, cached forever.
+static VIDEO_ENCODER: OnceLock<Result<EncoderInfo, String>> = OnceLock::new();
+
+fn detect_video_encoder(ffmpeg_path: &PathBuf) -> Result<EncoderInfo, String> {
+    #[allow(non_snake_case)]
+    let CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let output = Command::new(ffmpeg_path)
+        .args(["-encoders"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Failed to query ffmpeg encoders: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Priority: NVENC > AMF > QSV > libx264 > libopenh264
+    if stdout.contains("h264_nvenc") {
+        log::info!("Video encoder: h264_nvenc (NVIDIA NVENC)");
+        return Ok(EncoderInfo {
+            codec: "h264_nvenc",
+            extra_args: vec!["-preset", "p4"],
+        });
+    }
+    if stdout.contains("h264_amf") {
+        log::info!("Video encoder: h264_amf (AMD AMF)");
+        return Ok(EncoderInfo {
+            codec: "h264_amf",
+            extra_args: vec!["-quality", "balanced"],
+        });
+    }
+    if stdout.contains("h264_qsv") {
+        log::info!("Video encoder: h264_qsv (Intel QSV)");
+        return Ok(EncoderInfo {
+            codec: "h264_qsv",
+            extra_args: vec!["-preset", "medium"],
+        });
+    }
+    if stdout.contains("libx264") {
+        log::info!("Video encoder: libx264 (software)");
+        return Ok(EncoderInfo {
+            codec: "libx264",
+            extra_args: vec!["-preset", "ultrafast", "-tune", "zerolatency"],
+        });
+    }
+    // Last resort
+    log::info!("Video encoder: libopenh264 (software, slow)");
+    Ok(EncoderInfo {
+        codec: "libopenh264",
+        extra_args: vec![],
+    })
+}
+
+fn get_video_encoder(ffmpeg_path: &PathBuf) -> Result<&EncoderInfo, &String> {
+    VIDEO_ENCODER
+        .get_or_init(|| detect_video_encoder(ffmpeg_path))
+        .as_ref()
+}
 
 /// Encodes RGBA frames to H.264 MP4 via ffmpeg CLI pipe.
 /// Frame writes happen on a background thread to avoid blocking the main thread.
@@ -29,18 +97,27 @@ impl FfmpegEncoder {
         let size = format!("{width}x{height}");
         let rate = format!("{fps}");
 
+        let enc = get_video_encoder(ffmpeg_path)
+            .map_err(|e| e.clone())?;
+
         // Build video filter: portrait rotation first, then mirror, then vflip
-        // (so mirror flips left-right in portrait space, vflip fixes back camera)
-        let mut filters: Vec<&str> = Vec::new();
+        let mut filters: Vec<String> = Vec::new();
         if portrait {
-            filters.push("transpose=2");
+            filters.push("transpose=2".into());
         }
         if mirror {
-            filters.push("hflip");
+            filters.push("hflip".into());
         }
         if vflip {
-            filters.push("vflip");
+            filters.push("vflip".into());
         }
+        // Hardware encoders need NV12; software needs YUV420p
+        let pix_fmt = if enc.codec.contains("nvenc") || enc.codec.contains("qsv") {
+            "nv12"
+        } else {
+            "yuv420p"
+        };
+        filters.push(format!("format={pix_fmt}"));
         let vf = filters.join(",");
 
         let mut args: Vec<String> = vec![
@@ -51,15 +128,14 @@ impl FfmpegEncoder {
             "-pix_fmt".into(), "rgba".into(),
             "-r".into(), rate.clone(),
             "-i".into(), "-".into(),
-            "-c:v".into(), "libopenh264".into(),
-            "-b:v".into(), bitrate.into(),
-            "-pix_fmt".into(), "yuv420p".into(),
-            "-allow_skip_frames".into(), "1".into(),
+            "-vf".into(), vf,
+            "-c:v".into(), enc.codec.into(),
         ];
-        if !vf.is_empty() {
-            args.push("-vf".into());
-            args.push(vf);
+        for a in &enc.extra_args {
+            args.push((*a).into());
         }
+        args.push("-b:v".into());
+        args.push(bitrate.into());
 
         #[allow(non_snake_case)]
         let CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -90,8 +166,8 @@ impl FfmpegEncoder {
             })
         });
 
-        // Bounded channel: capacity 16 frames (~530MB at 4K)
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(16);
+        // Bounded channel: capacity 60 frames (~1s at 60fps, ~500MB at 1080p).
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(60);
 
         // Background writer thread: reads from channel, writes to ffmpeg stdin
         let writer_thread = thread::Builder::new()
@@ -117,7 +193,6 @@ impl FfmpegEncoder {
 
         // Keep stderr thread alive
         if let Some(t) = stderr_thread {
-            // Leak it intentionally — it dies when ffmpeg process exits
             std::mem::forget(t);
         }
 
