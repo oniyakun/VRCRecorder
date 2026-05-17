@@ -31,25 +31,27 @@ fn detect_video_encoder(ffmpeg_path: &PathBuf) -> Result<EncoderInfo, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Priority: NVENC > AMF > QSV > libx264 > libopenh264
+    // All hardware encoders get low-latency options to prevent multi-second
+    // encoder-internal buffering from causing duplicate tail frames.
     if stdout.contains("h264_nvenc") {
         log::info!("Video encoder: h264_nvenc (NVIDIA NVENC)");
         return Ok(EncoderInfo {
             codec: "h264_nvenc",
-            extra_args: vec!["-preset", "p4"],
+            extra_args: vec!["-preset", "p1", "-rc-lookahead", "0", "-delay", "0"],
         });
     }
     if stdout.contains("h264_amf") {
         log::info!("Video encoder: h264_amf (AMD AMF)");
         return Ok(EncoderInfo {
             codec: "h264_amf",
-            extra_args: vec!["-quality", "balanced"],
+            extra_args: vec!["-quality", "speed", "-usage", "ultralowlatency"],
         });
     }
     if stdout.contains("h264_qsv") {
         log::info!("Video encoder: h264_qsv (Intel QSV)");
         return Ok(EncoderInfo {
             codec: "h264_qsv",
-            extra_args: vec!["-preset", "medium"],
+            extra_args: vec!["-preset", "veryfast", "-look_ahead", "0"],
         });
     }
     if stdout.contains("libx264") {
@@ -224,6 +226,25 @@ impl FfmpegEncoder {
             Err(TrySendError::Full(_)) => Ok(false),
             Err(TrySendError::Disconnected(_)) => Err("Encoder writer thread disconnected".into()),
         }
+    }
+
+    /// Blocking send — waits for channel space. Only used during final flush
+    /// to guarantee the last frames are never dropped.
+    pub fn push_frame_blocking(&mut self, rgba_data: Vec<u8>) -> Result<(), String> {
+        let expected = (self.width * self.height * 4) as usize;
+        if rgba_data.len() != expected {
+            return Err(format!(
+                "Frame size mismatch: got {}, expected {expected}",
+                rgba_data.len()
+            ));
+        }
+
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or("Encoder not initialized")?;
+        tx.send(rgba_data)
+            .map_err(|_| "Encoder writer thread disconnected".into())
     }
 
     pub fn finish(&mut self) -> Result<(), String> {

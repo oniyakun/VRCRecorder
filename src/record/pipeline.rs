@@ -13,6 +13,7 @@ pub struct RecordingPipeline {
     mic_capture: Option<MicCapture>,
     output_dir: PathBuf,
     frame_count: u64,
+    dropped_frames: u64,
     /// Path where the encoded .mp4 will be written (used by finish step).
     video_path: Option<PathBuf>,
 }
@@ -26,6 +27,7 @@ impl RecordingPipeline {
             mic_capture: None,
             output_dir,
             frame_count: 0,
+            dropped_frames: 0,
             video_path: None,
         }
     }
@@ -110,6 +112,7 @@ impl RecordingPipeline {
         self.mic_capture = mic;
         self.video_path = Some(video_path);
         self.frame_count = 0;
+        self.dropped_frames = 0;
 
         log::info!("Recording started: {}x{}", width, height);
         Ok(())
@@ -142,18 +145,33 @@ impl RecordingPipeline {
             None
         };
 
-        // Flush the last frame directly from the Spout texture with
-        // synchronous glReadPixels — bypasses PBO to guarantee correct data.
+        // Flush remaining PBO frames + synchronous read of current Spout
+        // texture to ensure the latest frame is captured.
+        let mut flush_count = 0u64;
         if let Some(ref mut pbo) = self.pbo_reader {
             for data in pbo.flush(gl, spout_tex) {
                 if let Some(ref mut encoder) = self.encoder {
-                    if let Err(e) = encoder.push_frame(data) {
+                    // Blocking send — guarantees final frames are never dropped
+                    if let Err(e) = encoder.push_frame_blocking(data) {
                         log::error!("Encoder error during final flush: {e}");
                     } else {
                         self.frame_count += 1;
+                        flush_count += 1;
                     }
                 }
             }
+        }
+        if flush_count > 0 {
+            log::info!("Flushed {flush_count} final frames");
+        }
+
+        let total_dropped = self.dropped_frames;
+        if total_dropped > 0 {
+            log::warn!(
+                "{} frames dropped during recording ({:.1}s of video)",
+                total_dropped,
+                total_dropped as f64 / 60.0
+            );
         }
 
         // Take ownership for background finalization.
@@ -169,6 +187,7 @@ impl RecordingPipeline {
 
         // Reset state immediately so a new recording can start
         self.frame_count = 0;
+        self.dropped_frames = 0;
         self.audio_capture = None;
 
         // Finish ffmpeg encoding + merge audio on background thread.
@@ -195,12 +214,14 @@ impl RecordingPipeline {
                         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
                         let final_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
 
+                        let video_duration = frame_count as f64 / 60.0;
                         match merge_audio_video(
                             &ffmpeg_path,
                             vp,
                             audio_data,
                             mic_data,
                             &final_path,
+                            video_duration,
                         ) {
                             Ok(()) => {
                                 let _ = std::fs::remove_file(vp);
@@ -247,10 +268,10 @@ impl RecordingPipeline {
         pbo.begin_frame(gl, spout_tex);
         if let Some(rgba_data) = pbo.end_frame(gl) {
             match encoder.push_frame(rgba_data) {
-                Ok(_) => {
+                Ok(true) => {
                     self.frame_count += 1;
                     if self.frame_count % 120 == 0 {
-                        log::info!("{} frames captured", self.frame_count);
+                        log::info!("{} frames captured ({} dropped)", self.frame_count, self.dropped_frames);
                         if let Some(ref audio) = self.audio_capture {
                             let buf_size = audio.buffer_size();
                             if buf_size > 0 {
@@ -264,6 +285,12 @@ impl RecordingPipeline {
                                 );
                             }
                         }
+                    }
+                }
+                Ok(false) => {
+                    self.dropped_frames += 1;
+                    if self.dropped_frames % 60 == 1 {
+                        log::warn!("Encoder behind: {} frames dropped so far", self.dropped_frames);
                     }
                 }
                 Err(e) => {
@@ -327,6 +354,7 @@ fn merge_audio_video(
     audio_data: Option<(Vec<u8>, u32, u16)>,
     mic_data: Option<(Vec<u8>, u32, u16)>,
     output_path: &PathBuf,
+    video_duration_secs: f64,
 ) -> Result<(), String> {
     let audio_path = output_path.with_extension("sys.pcm");
     let mic_path = output_path.with_extension("mic.pcm");
@@ -383,10 +411,12 @@ fn merge_audio_video(
         }
     }
 
-    // No -shortest: video is the authoritative length. Audio stops slightly before
-    // video (audio.stop() is called before PBO flush), so -shortest would truncate
-    // the video to match the shorter audio track.
-    cmd.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
+    // Use video frame count to set exact output duration. This ensures the
+    // video track is never extended (no freeze frames) when audio happens to
+    // be longer (e.g. due to encoder startup buffering causing frame drops).
+    // When audio is shorter, it ends with silence instead — imperceptible.
+    cmd.args(["-t", &format!("{video_duration_secs:.3}")])
+        .args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
         .arg(output_path);
 
     let output = cmd.output()

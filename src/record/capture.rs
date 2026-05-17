@@ -136,20 +136,22 @@ impl PboReader {
         }
     }
 
-    /// Drain all remaining frames in the PBO pipeline, then read the latest texture.
-    /// Reads both PBOs directly without calling end_frame() to avoid index confusion.
+    /// Drain the last unread frame from the PBO pipeline and capture the latest
+    /// texture contents with a synchronous glReadPixels.
+    ///
+    /// After end_frame() swaps indices, `read_index` points to the PBO that was
+    /// last written by begin_frame — this is the latest frame not yet returned
+    /// to the encoder. `write_index` points to the PBO that end_frame() just
+    /// returned, so reading it would produce a duplicate. We only read the read
+    /// PBO and the source texture directly.
     pub fn flush(&mut self, gl: &glow::Context, src_tex: glow::Texture) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
-
-        if self.frame_count < 1 {
-            return frames;
-        }
-
         let size = (self.width * self.height * 4) as usize;
 
         unsafe {
-            // Read the read PBO (contains data from N-1 or earlier)
-            if self.frame_count >= 2 {
+            // Read the read PBO — contains the latest begin_frame data that
+            // end_frame() hasn't returned yet.
+            if self.frame_count >= 1 {
                 gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.read_index]));
                 let ptr = gl.map_buffer_range(
                     glow::PIXEL_PACK_BUFFER,
@@ -165,25 +167,39 @@ impl PboReader {
                 }
                 gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
             }
-
-            // Read the write PBO (contains data from last begin_frame — blocks until GPU finishes)
-            {
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.write_index]));
-                let ptr = gl.map_buffer_range(
-                    glow::PIXEL_PACK_BUFFER,
-                    0,
-                    size as i32,
-                    glow::MAP_READ_BIT,
-                );
-                if !ptr.is_null() {
-                    let data = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
-                    if !data.iter().all(|&b| b == 0) {
-                        frames.push(data);
-                    }
-                }
-                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
-            }
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+        }
+
+        // Synchronous glReadPixels from the current Spout texture. This is the
+        // definitive last frame — it bypasses the PBO pipeline entirely and
+        // also acts as an implicit GPU flush (sync glReadPixels blocks until
+        // all pending DMA transfers complete).
+        {
+            let mut pixels = vec![0u8; size];
+            unsafe {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(self.fbo));
+                gl.framebuffer_texture_2d(
+                    glow::READ_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(src_tex),
+                    0,
+                );
+                gl.read_pixels(
+                    0, 0,
+                    self.width as i32, self.height as i32,
+                    glow::RGBA, glow::UNSIGNED_BYTE,
+                    glow::PixelPackData::Slice(Some(&mut pixels[..])),
+                );
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            }
+            if !pixels.iter().all(|&b| b == 0) {
+                // Deduplicate against all PBO frames (not just the last one)
+                let is_dup = frames.iter().any(|f| *f == pixels);
+                if !is_dup {
+                    frames.push(pixels);
+                }
+            }
         }
 
         self.frame_count = 0;
