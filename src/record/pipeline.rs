@@ -13,8 +13,8 @@ pub struct RecordingPipeline {
     mic_capture: Option<MicCapture>,
     output_dir: PathBuf,
     frame_count: u64,
-    dropped_count: u64,
-    temp_video_path: Option<PathBuf>,
+    /// Path where the encoded .mp4 will be written (used by finish step).
+    video_path: Option<PathBuf>,
 }
 
 impl RecordingPipeline {
@@ -26,8 +26,7 @@ impl RecordingPipeline {
             mic_capture: None,
             output_dir,
             frame_count: 0,
-            dropped_count: 0,
-            temp_video_path: None,
+            video_path: None,
         }
     }
 
@@ -56,24 +55,21 @@ impl RecordingPipeline {
         }
 
         let ffmpeg_path = find_ffmpeg()?;
-        let fps = 60.0;
 
         std::fs::create_dir_all(&self.output_dir)
             .map_err(|e| format!("Failed to create output dir: {e}"))?;
 
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-
-        // Record video-only first to a temp file
-        let temp_video = self.output_dir.join(format!(
+        let video_path = self.output_dir.join(format!(
             "VRCRecorder_{timestamp}_video.mp4"
         ));
 
         let encoder = FfmpegEncoder::start(
             &ffmpeg_path,
-            &temp_video,
+            &video_path,
             width,
             height,
-            fps,
+            60.0,
             bitrate,
             mirror,
             portrait,
@@ -82,7 +78,6 @@ impl RecordingPipeline {
 
         let pbo = PboReader::new(gl, width, height);
 
-        // Start system audio capture
         let audio = match AudioCapture::start() {
             Ok(a) => {
                 log::info!("System audio capture started");
@@ -94,7 +89,6 @@ impl RecordingPipeline {
             }
         };
 
-        // Start mic capture if enabled
         let mic = if mic_enabled {
             match MicCapture::start(mic_device) {
                 Ok(m) => {
@@ -114,19 +108,14 @@ impl RecordingPipeline {
         self.pbo_reader = Some(pbo);
         self.audio_capture = audio;
         self.mic_capture = mic;
-        self.temp_video_path = Some(temp_video);
+        self.video_path = Some(video_path);
         self.frame_count = 0;
-        self.dropped_count = 0;
 
-        log::info!(
-            "Recording started: {}x{}",
-            width,
-            height,
-        );
+        log::info!("Recording started: {}x{}", width, height);
         Ok(())
     }
 
-    pub fn stop(&mut self, gl: &glow::Context) -> Result<(), String> {
+    pub fn stop(&mut self, gl: &glow::Context, spout_tex: glow::Texture) -> Result<(), String> {
         // Stop audio capture first, then drain remaining data
         let audio_data = if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
@@ -153,26 +142,24 @@ impl RecordingPipeline {
             None
         };
 
-        // Flush PBO pipeline: drain remaining frames before finishing encoder
+        // Flush the last frame directly from the Spout texture with
+        // synchronous glReadPixels — bypasses PBO to guarantee correct data.
         if let Some(ref mut pbo) = self.pbo_reader {
-            for data in pbo.flush(gl) {
+            for data in pbo.flush(gl, spout_tex) {
                 if let Some(ref mut encoder) = self.encoder {
-                    match encoder.push_frame(data) {
-                        Ok(true) => self.frame_count += 1,
-                        Ok(false) => log::warn!("Encoder full during PBO flush"),
-                        Err(e) => log::error!("Encoder error during flush: {e}"),
+                    if let Err(e) = encoder.push_frame(data) {
+                        log::error!("Encoder error during final flush: {e}");
+                    } else {
+                        self.frame_count += 1;
                     }
                 }
             }
         }
 
-        // Take ownership of encoder, video path, output dir for background finalization.
-        // finish() and audio merge block for seconds — must NOT run on the render thread
-        // or we lose Spout frames arriving during finalization.
-        let encoder = self.encoder.take();
-        let video_path = self.temp_video_path.take();
+        // Take ownership for background finalization.
+        let mut encoder = self.encoder.take();
+        let video_path = self.video_path.take();
         let frame_count = self.frame_count;
-        let dropped_count = self.dropped_count;
         let output_dir = self.output_dir.clone();
 
         // Clean up GPU resources on render thread
@@ -182,38 +169,21 @@ impl RecordingPipeline {
 
         // Reset state immediately so a new recording can start
         self.frame_count = 0;
-        self.dropped_count = 0;
         self.audio_capture = None;
-        self.temp_video_path = None;
 
-        // Finalize encoding and merge audio on a background thread
-        if encoder.is_some() || video_path.is_some() {
+        // Finish ffmpeg encoding + merge audio on background thread.
+        if let Some(mut enc) = encoder {
             std::thread::Builder::new()
                 .name("encoder-finish".into())
                 .spawn(move || {
-                    // Finish video encoding
-                    if let Some(mut enc) = encoder {
-                        log::info!(
-                            "Finishing video: {} frames queued, {} dropped ({:.1}%)",
-                            frame_count,
-                            dropped_count,
-                            if frame_count + dropped_count > 0 {
-                                (dropped_count as f64 / (frame_count + dropped_count) as f64) * 100.0
-                            } else {
-                                0.0
-                            }
-                        );
-                        if let Err(e) = enc.finish() {
-                            log::error!("Encoder finish failed: {e}");
-                            // Video file may be corrupt; keep it for debugging
-                            if let Some(ref vp) = video_path {
-                                log::info!("Partial video kept at {}", vp.display());
-                            }
-                            return;
-                        }
+                    // Step 1: close pipe, wait for ffmpeg to finish encoding
+                    log::info!("Finishing video: {} frames encoded", frame_count);
+                    if let Err(e) = enc.finish() {
+                        log::error!("Encoder finish failed: {e}");
+                        return;
                     }
 
-                    // Merge audio using ffmpeg
+                    // Step 2: merge audio into final .mp4
                     if let Some(ref vp) = video_path {
                         let ffmpeg_path = match find_ffmpeg() {
                             Ok(p) => p,
@@ -252,8 +222,6 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    /// Check if the default mic device changed and restart capture if needed.
-    /// Should be called periodically (e.g., every 2s) during recording.
     pub fn check_mic_device(&mut self) {
         if let Some(ref mic) = self.mic_capture {
             if mic.device_changed() {
@@ -270,7 +238,6 @@ impl RecordingPipeline {
         }
     }
 
-    /// Call each frame: PBO readback → non-blocking encoder push.
     pub fn process_frame(&mut self, gl: &glow::Context, spout_tex: glow::Texture) {
         let (pbo, encoder) = match (&mut self.pbo_reader, &mut self.encoder) {
             (Some(pbo), Some(enc)) => (pbo, enc),
@@ -280,10 +247,10 @@ impl RecordingPipeline {
         pbo.begin_frame(gl, spout_tex);
         if let Some(rgba_data) = pbo.end_frame(gl) {
             match encoder.push_frame(rgba_data) {
-                Ok(true) => {
+                Ok(_) => {
                     self.frame_count += 1;
-                    // Log audio buffer size every 2s (~120 frames at 60fps)
                     if self.frame_count % 120 == 0 {
+                        log::info!("{} frames captured", self.frame_count);
                         if let Some(ref audio) = self.audio_capture {
                             let buf_size = audio.buffer_size();
                             if buf_size > 0 {
@@ -297,27 +264,10 @@ impl RecordingPipeline {
                                 );
                             }
                         }
-                        if self.dropped_count > 0 {
-                            log::warn!(
-                                "Encoder dropped {} frames so far ({} queued)",
-                                self.dropped_count,
-                                self.frame_count
-                            );
-                        }
-                    }
-                }
-                Ok(false) => {
-                    self.dropped_count += 1;
-                    if self.dropped_count % 60 == 1 {
-                        log::warn!(
-                            "Encoder full — {} frames dropped so far ({} queued)",
-                            self.dropped_count,
-                            self.frame_count
-                        );
                     }
                 }
                 Err(e) => {
-                    log::error!("Encoder error on frame {}: {e}", self.frame_count);
+                    log::error!("Encoder write error on frame {}: {e}", self.frame_count);
                 }
             }
         }
@@ -326,9 +276,7 @@ impl RecordingPipeline {
 
 impl Drop for RecordingPipeline {
     fn drop(&mut self) {
-        if let Some(mut encoder) = self.encoder.take() {
-            let _ = encoder.finish();
-        }
+        drop(self.encoder.take());
         if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
         }

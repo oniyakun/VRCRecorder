@@ -273,8 +273,11 @@ impl RenderState {
 
     fn stop_recording(&mut self) {
         if !self.recording { return; }
+        let tex = self.spout_tex;
         if let Some(gl) = self.gl.as_ref() {
-            let _ = self.recording_pipeline.stop(gl);
+            if let Some(t) = tex {
+                let _ = self.recording_pipeline.stop(gl, t);
+            }
         }
         self.recording = false;
         self.is_recording.store(false, Ordering::Relaxed);
@@ -345,8 +348,11 @@ impl RenderState {
 
                 // Stop recording if active
                 if self.recording {
+                    let tex = self.spout_tex;
                     if let Some(gl) = self.gl.as_ref() {
-                        let _ = self.recording_pipeline.stop(gl);
+                        if let Some(t) = tex {
+                            let _ = self.recording_pipeline.stop(gl, t);
+                        }
                     }
                     self.recording = false;
                     self.recording_start = None;
@@ -643,8 +649,11 @@ impl ApplicationHandler for RenderState {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let WindowEvent::CloseRequested = event {
             if self.recording {
+                let tex = self.spout_tex;
                 if let Some(gl) = self.gl.as_ref() {
-                    let _ = self.recording_pipeline.stop(gl);
+                    if let Some(t) = tex {
+                        let _ = self.recording_pipeline.stop(gl, t);
+                    }
                 }
             }
             if let Some(gl) = self.gl.as_ref() {

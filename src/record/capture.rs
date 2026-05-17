@@ -65,11 +65,6 @@ impl PboReader {
                 glow::UNSIGNED_BYTE,
                 glow::PixelPackData::Slice(None),
             );
-            // Force submission of the read-pixels command to the GPU so the DMA
-            // begins immediately. Without this, the driver may hold the command
-            // in its software queue and flush()'s glMapBufferRange would return
-            // stale data because the GPU never started the transfer.
-            gl.flush();
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         }
@@ -141,53 +136,50 @@ impl PboReader {
         }
     }
 
-    /// Drain remaining frames from the PBO pipeline.
-    /// Call after the last end_frame, before stopping the encoder.
-    pub fn flush(&mut self, gl: &glow::Context) -> Vec<Vec<u8>> {
+    /// Drain all remaining frames: first flush PBO pipeline, then capture final frame.
+    /// The double-buffered PBO has up to 2 frames queued. We drain those via end_frame(),
+    /// then do a final synchronous glReadPixels to capture the latest texture content.
+    pub fn flush(&mut self, gl: &glow::Context, src_tex: glow::Texture) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
-        if self.frame_count < 1 {
-            return frames;
+
+        // Drain any buffered frames in the PBO pipeline (up to 2 frames in double-buffered setup)
+        for _ in 0..3 {
+            if let Some(data) = self.end_frame(gl) {
+                if !data.iter().all(|&b| b == 0) {
+                    frames.push(data);
+                }
+            }
         }
+
+        // Final synchronous read of the latest texture content to ensure we get
+        // the last frame that may still be on the source texture but not yet
+        // in the PBO pipeline.
         let size = (self.width * self.height * 4) as usize;
+        let mut pixels = vec![0u8; size];
         unsafe {
-            // Read the read PBO (data from N-1)
-            if self.frame_count >= 2 {
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.read_index]));
-                let ptr = gl.map_buffer_range(
-                    glow::PIXEL_PACK_BUFFER,
-                    0,
-                    size as i32,
-                    glow::MAP_READ_BIT,
-                );
-                if !ptr.is_null() {
-                    let data =
-                        std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
-                    if !data.is_empty() {
-                        frames.push(data);
-                    }
-                }
-                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
-            }
-            // Read the write PBO (data from last begin_frame — blocks until GPU finishes)
-            {
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbos[self.write_index]));
-                let ptr = gl.map_buffer_range(
-                    glow::PIXEL_PACK_BUFFER,
-                    0,
-                    size as i32,
-                    glow::MAP_READ_BIT,
-                );
-                if !ptr.is_null() {
-                    let data =
-                        std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
-                    if !data.is_empty() {
-                        frames.push(data);
-                    }
-                }
-                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
-            }
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(self.fbo));
+            gl.framebuffer_texture_2d(
+                glow::READ_FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(src_tex),
+                0,
+            );
+            gl.read_pixels(
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixels[..])),
+            );
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         }
+        if !pixels.iter().all(|&b| b == 0) {
+            frames.push(pixels);
+        }
+
         self.frame_count = 0;
         frames
     }
