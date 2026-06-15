@@ -98,9 +98,10 @@ relaunch, power loss, killed ffmpeg) leaves an unfinalized, likely **unplayable*
 ### R6 🟠 🔶 — Mixed sample rates / surround channel layouts in the audio merge
 System audio uses the output device's native rate & channel count (could be 48 k 5.1/7.1); mic
 may be 44.1 k mono. `amix` (`pipeline.rs:399`) relies on ffmpeg's implicit format negotiation.
-Verify the mix is correct, in sync, and that surround outputs don't produce a wrong/garbled
-downmix or channel-count mismatch.
-→ **Verify**: test 5.1 output device + mono mic; check channels, levels, sync.
+→ **Round 0 update (2026-06-16)**: a real recording mixed **system 96 kHz + mic 48 kHz** (both
+stereo) into a 96 kHz AAC track successfully — so **mismatched sample rates work** (ffmpeg
+auto-resamples). **Remaining**: **surround / multi-channel** outputs (5.1/7.1) and mono mic —
+still untested; that's the part likely to mis-map channels. Verify those specifically.
 
 ### R7 🟠 🔶 — Mid-recording encoder failure isn't surfaced
 If `push_frame` returns `Err` (writer thread/ffmpeg gone), `process_frame` only logs it
@@ -161,12 +162,42 @@ note it and fail loudly/gracefully.
 
 ---
 
+## E. Round 0 runtime findings (from the smoke test, 2026-06-15)
+
+### O1 🟠 ✅ — Bundled payload is never redeployed on upgrade
+`bundle::extract()` (`src/bundle.rs:26-53`) writes each file only `if !path.exists()`. After a
+user has run any version once, the embedded `ffmpeg.exe` / av-sw DLLs / `Spout.dll` are **never
+overwritten** on upgrade. Proven at runtime: the freshly built exe embeds `Spout.dll` 539,136 B
+(md5 `fc758f26…`) but the live run loaded the May-18 cached 533,504 B (md5 `616fda29…`); ffmpeg
+was byte-identical (`13aa0165…`) so it didn't show. By contrast the SteamVR manifests are
+rewritten unconditionally (`std::fs::write`, `steamvr/mod.rs:159-170`), so only the
+binaries are affected.
+→ **Impact**: a fix shipped in a future ffmpeg/Spout won't reach existing users; silent version
+mismatch. **Fix**: embed a payload version/hash and overwrite when it differs (or extract into a
+version-stamped subdir). **Audit note**: clear `%LOCALAPPDATA%/vrc-recorder/` between builds when
+testing bundled-dependency changes.
+
+### O3 🟡 🔶 — Output audio sample rate blindly follows the device (96 kHz observed)
+The merged AAC track inherits the **system output device's** sample rate. On the reference
+machine that device runs at **96 kHz**, so recordings are 96 kHz AAC (`audio.rs` reads
+`default_output_config().sample_rate()`; merge passes it straight through, `pipeline.rs:379-382`).
+96 kHz is valid but unusual for delivery — larger files, and some players/platforms/upload
+pipelines expect 44.1/48 kHz. Consider normalizing output to 48 kHz (ffmpeg `-ar 48000`) for
+compatibility and size, independent of the capture device rate.
+
+### O2 🟡 ✅ — SteamVR overlay busy-retries + spams the log when no HMD
+With `steamvr_overlay=true` (default) and SteamVR not running, `overlay_main`
+(`steamvr/mod.rs:78-99`) logs `VR_InitInternal failed (error=108) — retrying in 3s` every 3 s
+**indefinitely** (the observed log was almost entirely this line). A desktop-only user (no VR)
+who leaves the default on gets an ever-growing log and a thread waking every 3 s forever.
+→ **Fix**: exponential/backoff retry and/or log the failure once then go quiet until state changes.
+
 ## Suggested triage order
 
 1. **C1, C2** — trivial frontend fixes; core controls currently broken. (Highest value/effort.)
 2. **C3** — wrong-mic recording; small backend fix.
 3. **R1/R2** — the central correctness question (fps/duration/sync); needs measurement first.
 4. **R4** — potential data loss on resolution change.
-5. **R3, R5, R7** — robustness/scale for long sessions.
+5. **R3, R5, R7, O1** — robustness/scale for long sessions + the upgrade-payload bug (O1) before shipping any update.
 6. **R6, R8, R-VR** — verify; fix if confirmed.
-7. **U1–U8** — UX/store polish for release.
+7. **U1–U8, O2** — UX/store polish for release (incl. SteamVR retry log spam).
