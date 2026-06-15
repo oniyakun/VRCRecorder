@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub mic_device: Option<String>,
     #[serde(default = "default_steamvr_overlay")]
     pub steamvr_overlay: bool,
+    #[serde(default = "default_steamvr_auto_launch")]
+    pub steamvr_auto_launch: bool,
 }
 
 fn default_video_bitrate() -> String {
@@ -59,6 +61,9 @@ fn default_mic_enabled() -> bool {
 }
 fn default_steamvr_overlay() -> bool {
     true
+}
+fn default_steamvr_auto_launch() -> bool {
+    false
 }
 
 fn default_window_width() -> u32 {
@@ -103,6 +108,7 @@ impl Default for AppConfig {
             mic_enabled: true,
             mic_device: None,
             steamvr_overlay: true,
+            steamvr_auto_launch: false,
         }
     }
 }

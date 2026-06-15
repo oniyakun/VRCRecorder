@@ -21,21 +21,24 @@ impl MicCapture {
             // Find the named input device
             host.input_devices()
                 .map_err(|e| format!("Failed to enumerate input devices: {e}"))?
-                .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+                .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
                 .ok_or_else(|| format!("Microphone '{name}' not found"))?
         } else {
             host.default_input_device()
                 .ok_or("No input audio device found")?
         };
 
-        let actual_name = device.name().unwrap_or_default();
+        let actual_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_default();
         log::info!("Mic capture: device='{actual_name}'");
 
         let config = device
             .default_input_config()
             .map_err(|e| format!("Failed to get input config: {e}"))?;
 
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels();
 
         let stream_config = cpal::StreamConfig {
@@ -49,7 +52,7 @@ impl MicCapture {
 
         let stream = device
             .build_input_stream::<f32, _, _>(
-                &stream_config,
+                stream_config,
                 move |data: &[f32], _info| {
                     // Convert f32 samples to s16le PCM
                     let pcm: Vec<u8> = data
@@ -86,8 +89,8 @@ impl MicCapture {
     pub fn device_changed(&self) -> bool {
         let host = cpal::default_host();
         if let Some(default) = host.default_input_device() {
-            if let Ok(name) = default.name() {
-                return name != self.device_name;
+            if let Ok(desc) = default.description() {
+                return desc.name() != self.device_name;
             }
         }
         false
@@ -134,7 +137,9 @@ impl MicCapture {
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Ok(devices) => devices
+            .filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
+            .collect(),
         Err(_) => Vec::new(),
     }
 }

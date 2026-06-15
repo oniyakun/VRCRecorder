@@ -11,7 +11,7 @@ mod render_thread;
 mod spout;
 mod steamvr;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +31,9 @@ pub struct AppState {
     pub preview_buf: Arc<Mutex<Vec<u8>>>,
     pub preview_dims: Arc<Mutex<(u32, u32)>>,
     pub mjpeg_port: u16,
+    /// Whether to auto-launch SteamVR if not running. Shared live with the
+    /// SteamVR overlay thread so toggling it in the UI takes effect immediately.
+    pub steamvr_auto_launch: Arc<AtomicBool>,
 }
 
 // ===== Tauri Commands =====
@@ -97,12 +100,18 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let mic_device = config.mic_device.clone();
     let auto_stop_camera = config.auto_stop_camera;
     let output_dir = config.output_dir.clone();
+    let steamvr_auto_launch = config.steamvr_auto_launch;
 
     {
         let mut cfg = state.config.lock().unwrap();
         *cfg = config;
         cfg.save();
     }
+
+    // Push the auto-launch preference to the SteamVR overlay thread live.
+    state
+        .steamvr_auto_launch
+        .store(steamvr_auto_launch, Ordering::Relaxed);
 
     let _ = state.cmd_tx.lock().unwrap().send(RenderCommand::UpdateConfig {
         bitrate,
@@ -243,12 +252,16 @@ fn main() {
     // Recording state flag shared with SteamVR overlay thread
     let is_recording = Arc::new(AtomicBool::new(false));
 
+    // Auto-launch-SteamVR flag, shared live with the overlay thread
+    let steamvr_auto_launch = Arc::new(AtomicBool::new(config.steamvr_auto_launch));
+
     // Shared preview buffer (render thread writes, protocol handler reads)
     let preview_buf = Arc::new(Mutex::new(Vec::new()));
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
 
     // Clone before moving into render thread / setup closure
     let is_recording_for_overlay = is_recording.clone();
+    let auto_launch_for_overlay = steamvr_auto_launch.clone();
 
     let render_config = config.clone();
     render_thread::spawn(
@@ -273,6 +286,7 @@ fn main() {
         preview_buf,
         preview_dims,
         mjpeg_port,
+        steamvr_auto_launch,
     };
 
     tauri::Builder::default()
@@ -331,7 +345,12 @@ fn main() {
             // Spawn SteamVR overlay thread (no-op if disabled in config)
             let overlay_config = app.state::<AppState>().config.lock().unwrap().clone();
             let overlay_cmd_tx = app.state::<AppState>().cmd_tx.lock().unwrap().clone();
-            steamvr::spawn_overlay(overlay_config, overlay_cmd_tx, is_recording_for_overlay.clone());
+            steamvr::spawn_overlay(
+                overlay_config,
+                overlay_cmd_tx,
+                is_recording_for_overlay.clone(),
+                auto_launch_for_overlay.clone(),
+            );
 
             Ok(())
         })

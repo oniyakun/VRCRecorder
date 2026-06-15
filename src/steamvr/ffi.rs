@@ -300,6 +300,30 @@ fn steam_install_path() -> Option<PathBuf> {
     None
 }
 
+/// Launch SteamVR via its `vrstartup.exe` (located next to `openvr_api.dll`).
+/// Returns Err if SteamVR can't be located or the process fails to spawn.
+pub fn launch_steamvr() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    let dll_path = find_openvr_dll()
+        .ok_or_else(|| "Cannot launch SteamVR: openvr_api.dll not found".to_string())?;
+    // openvr_api.dll lives in <SteamVR>/bin/win64/, alongside vrstartup.exe.
+    let vrstartup = dll_path
+        .parent()
+        .ok_or_else(|| "Cannot resolve SteamVR bin directory".to_string())?
+        .join("vrstartup.exe");
+    if !vrstartup.exists() {
+        return Err(format!("vrstartup.exe not found at {}", vrstartup.display()));
+    }
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    std::process::Command::new(&vrstartup)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("Failed to launch SteamVR: {e}"))?;
+    Ok(())
+}
+
 pub fn load_openvr() -> Result<OpenVRDll, String> {
     use std::os::windows::ffi::OsStrExt;
 

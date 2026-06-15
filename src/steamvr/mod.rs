@@ -20,7 +20,7 @@ use crate::channels::RenderCommand;
 use crate::config::AppConfig;
 
 use ffi::{
-    get_interface, load_openvr, InputDigitalActionData, VRActiveActionSet, VREvent,
+    get_interface, launch_steamvr, load_openvr, InputDigitalActionData, VRActiveActionSet, VREvent,
     VREVENT_DASHBOARD_ACTIVATED, VREVENT_QUIT, VR_APPLICATION_OVERLAY,
     IVRAPPLICATIONS_VERSION, IVROVERLAY_VERSION, IVRINPUT_VERSION,
 };
@@ -38,6 +38,7 @@ pub fn spawn_overlay(
     config: AppConfig,
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
+    auto_launch: Arc<AtomicBool>,
 ) {
     if !config.steamvr_overlay {
         log::info!("SteamVR overlay disabled in config");
@@ -47,12 +48,16 @@ pub fn spawn_overlay(
     std::thread::Builder::new()
         .name("steamvr-overlay".into())
         .spawn(move || {
-            overlay_main(cmd_tx, is_recording);
+            overlay_main(cmd_tx, is_recording, auto_launch);
         })
         .expect("Failed to spawn SteamVR overlay thread");
 }
 
-fn overlay_main(cmd_tx: mpsc::Sender<RenderCommand>, is_recording: Arc<AtomicBool>) {
+fn overlay_main(
+    cmd_tx: mpsc::Sender<RenderCommand>,
+    is_recording: Arc<AtomicBool>,
+    auto_launch: Arc<AtomicBool>,
+) {
     // ---- Step 1: Load DLL (retry until SteamVR is available) ----
     let dll = loop {
         match load_openvr() {
@@ -67,6 +72,9 @@ fn overlay_main(cmd_tx: mpsc::Sender<RenderCommand>, is_recording: Arc<AtomicBoo
 
     // ---- Step 2: Init OpenVR as overlay application ----
     // OpenVR-AdvancedSettings uses VRApplication_Overlay with CreateDashboardOverlay successfully.
+    // While VR_InitInternal keeps failing, SteamVR isn't running yet; if the user enabled
+    // auto-launch, start it once via vrstartup.exe and keep retrying until it comes up.
+    let mut launch_attempted = false;
     loop {
         // Small delay to let SteamVR fully initialize (OyasumiVR does this)
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -74,6 +82,14 @@ fn overlay_main(cmd_tx: mpsc::Sender<RenderCommand>, is_recording: Arc<AtomicBoo
             let mut error: i32 = 0;
             let vr = (dll.vr_init)(&mut error, VR_APPLICATION_OVERLAY);
             if vr.is_null() {
+                // Read the flag live so toggling it in the UI takes effect while we wait.
+                if !launch_attempted && auto_launch.load(Ordering::Relaxed) {
+                    launch_attempted = true;
+                    match launch_steamvr() {
+                        Ok(()) => log::info!("SteamVR overlay: auto-launching SteamVR (vrstartup.exe)"),
+                        Err(e) => log::warn!("SteamVR overlay: auto-launch failed: {e}"),
+                    }
+                }
                 log::info!("SteamVR overlay: VR_InitInternal failed (error={error}) — retrying in 3s");
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;

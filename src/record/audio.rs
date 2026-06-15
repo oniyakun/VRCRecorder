@@ -22,7 +22,7 @@ impl AudioCapture {
             .default_output_config()
             .map_err(|e| format!("Failed to get output config: {e}"))?;
 
-        let sample_rate = out_config.sample_rate().0;
+        let sample_rate = out_config.sample_rate();
         let channels = out_config.channels();
 
         // Build an input stream on the output device for loopback capture
@@ -43,7 +43,7 @@ impl AudioCapture {
 
         let stream = device
             .build_input_stream::<f32, _, _>(
-                &stream_config,
+                stream_config,
                 move |data: &[f32], _info| {
                     // Convert f32 samples to s16le PCM interleaved
                     let pcm: Vec<u8> = data
