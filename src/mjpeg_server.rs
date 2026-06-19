@@ -1,11 +1,17 @@
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Shared state between the render thread and the MJPEG server.
 pub struct MjpegState {
     pub jpeg_data: Arc<Mutex<Vec<u8>>>,
+    /// Monotonically increasing frame sequence number.
+    /// The render thread increments this each time a new JPEG is written.
+    /// The MJPEG server uses it to detect new frames (instead of jpeg.len(),
+    /// which can collide when consecutive frames compress to the same size).
+    pub frame_seq: Arc<AtomicU64>,
 }
 
 /// Start a minimal MJPEG-over-HTTP server on a random available port.
@@ -32,6 +38,7 @@ fn serve(listener: TcpListener, state: MjpegState) {
             Ok(client) => {
                 let state = MjpegState {
                     jpeg_data: state.jpeg_data.clone(),
+                    frame_seq: state.frame_seq.clone(),
                 };
                 thread::Builder::new()
                     .name("mjpeg-client".into())
@@ -59,9 +66,19 @@ fn handle_client(mut client: TcpStream, state: &MjpegState) {
         return;
     }
 
-    // Stream frames at source framerate (track changes to avoid duplicates)
-    let mut last_len = 0usize;
+    // Stream frames at source framerate.
+    // Use a frame sequence counter instead of jpeg.len() to detect new
+    // frames — consecutive frames can compress to identical sizes, which
+    // would cause the preview to stall on unchanged scene regions.
+    let mut last_seq = 0u64;
     loop {
+        let seq = state.frame_seq.load(Ordering::Relaxed);
+        if seq == last_seq {
+            thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        }
+        last_seq = seq;
+
         let jpeg = {
             let buf = state.jpeg_data.lock().unwrap();
             buf.clone()
@@ -71,13 +88,6 @@ fn handle_client(mut client: TcpStream, state: &MjpegState) {
             thread::sleep(std::time::Duration::from_millis(10));
             continue;
         }
-
-        // Only send if frame data changed (avoids redundant sends)
-        if jpeg.len() == last_len {
-            thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-        last_len = jpeg.len();
 
         let part = format!(
             "--FRAME\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",

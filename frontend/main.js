@@ -39,12 +39,32 @@
             case 'SenderListUpdated':
                 state.senders = d.senders || [];
                 var c = $('sender-list');
+                // Clear list safely (textContent avoids innerHTML injection)
+                while (c.firstChild) { c.removeChild(c.firstChild); }
                 if (!state.senders.length) {
-                    c.innerHTML = '<div class="setting-item" style="color:rgba(255,255,255,0.3);font-style:italic;">No senders found</div>';
+                    var empty = document.createElement('div');
+                    empty.className = 'setting-item';
+                    empty.style.color = 'rgba(255,255,255,0.3)';
+                    empty.style.fontStyle = 'italic';
+                    empty.textContent = 'No senders found';
+                    c.appendChild(empty);
                 } else {
-                    c.innerHTML = state.senders.map(function(s) {
-                        return '<div class="setting-item" onclick="connectSender(\'' + s + '\')"><div class="sender-dot"></div><span class="sender-name">' + s + '</span></div>';
-                    }).join('');
+                    state.senders.forEach(function(s) {
+                        var item = document.createElement('div');
+                        item.className = 'setting-item';
+                        item.style.cursor = 'pointer';
+                        var dot = document.createElement('div');
+                        dot.className = 'sender-dot';
+                        item.appendChild(dot);
+                        var nameSpan = document.createElement('span');
+                        nameSpan.className = 'sender-name';
+                        nameSpan.textContent = s;
+                        item.appendChild(nameSpan);
+                        item.addEventListener('click', function() {
+                            window.connectSender(s);
+                        });
+                        c.appendChild(item);
+                    });
                 }
                 break;
 
@@ -76,6 +96,9 @@
                 $('live-tag-text').textContent = 'PREVIEW MODE';
                 $('meta-elapsed').textContent = '00:00:00';
                 playSound('sound/stop.mp3');
+                if (d.final_path) {
+                    status('Saved: ' + d.final_path);
+                }
                 break;
 
             case 'RecordingElapsed':
@@ -111,7 +134,8 @@
                 break;
 
             case 'ResolutionChanged':
-                status('Resolution changed - restarting...');
+                status('Resolution changed: ' + d.old_w + 'x' + d.old_h + ' -> ' + d.new_w + 'x' + d.new_h);
+                $('meta-resolution').textContent = d.new_w + 'x' + d.new_h;
                 break;
         }
     }
@@ -262,7 +286,13 @@
     });
     $('osc-send-port').addEventListener('change', function() {
         if (!state.config) return;
+        state.config.vrchat_port = this.value;
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+    $('bitrate-select').addEventListener('change', function() {
+        if (!state.config) return;
         state.config.video_bitrate = this.value;
+        $('meta-bitrate').textContent = this.value;
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 

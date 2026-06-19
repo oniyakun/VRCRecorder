@@ -11,7 +11,7 @@ mod render_thread;
 mod spout;
 mod steamvr;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +31,7 @@ pub struct AppState {
     pub preview_buf: Arc<Mutex<Vec<u8>>>,
     pub preview_dims: Arc<Mutex<(u32, u32)>>,
     pub mjpeg_port: u16,
+    pub steamvr_overlay_enabled: Arc<AtomicBool>,
 }
 
 // ===== Tauri Commands =====
@@ -88,15 +89,7 @@ fn get_config(state: tauri::State<AppState>) -> Result<AppConfig, String> {
 
 #[tauri::command]
 fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(), String> {
-    let bitrate = config.video_bitrate.clone();
-    let mirror = config.mirror_video;
-    let portrait = config.portrait_mode;
-    let vflip = config.video_vflip;
-    let preview_enabled = config.preview_enabled;
-    let mic_enabled = config.mic_enabled;
-    let mic_device = config.mic_device.clone();
-    let auto_stop_camera = config.auto_stop_camera;
-    let output_dir = config.output_dir.clone();
+    let render_config = config.clone();
 
     {
         let mut cfg = state.config.lock().unwrap();
@@ -104,17 +97,17 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         cfg.save();
     }
 
-    let _ = state.cmd_tx.lock().unwrap().send(RenderCommand::UpdateConfig {
-        bitrate,
-        mirror,
-        portrait,
-        vflip,
-        preview_enabled,
-        mic_enabled,
-        mic_device,
-        auto_stop_camera,
-        output_dir,
-    });
+    state
+        .steamvr_overlay_enabled
+        .store(render_config.steamvr_overlay, Ordering::Relaxed);
+
+    sync_osc(&state);
+
+    let _ = state
+        .cmd_tx
+        .lock()
+        .unwrap()
+        .send(RenderCommand::UpdateConfig(render_config));
 
     Ok(())
 }
@@ -124,13 +117,7 @@ fn poll_events(state: tauri::State<AppState>) -> Result<Vec<RenderEvent>, String
     let mut events = Vec::new();
     let rx = state.event_rx.lock().unwrap();
     while let Ok(evt) = rx.try_recv() {
-        let is_res_change = matches!(evt, RenderEvent::ResolutionChanged { .. });
         events.push(evt);
-        if is_res_change {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let _ = std::process::Command::new(&exe).spawn();
-            std::process::exit(0);
-        }
     }
     Ok(events)
 }
@@ -178,20 +165,17 @@ fn sync_osc(state: &AppState) {
 
     if enabled {
         let cmd_tx = state.cmd_tx.lock().unwrap().clone();
-        match OscReceiver::start(
-            port.parse().unwrap_or(9001),
-            move |msg| {
-                if msg.address == "/usercamera/OrientationIsLandscape" {
-                    let _ = cmd_tx.send(RenderCommand::UpdateOrientation {
-                        is_landscape: match msg.value {
-                            osc::OscValue::Int(v) => v != 0,
-                            osc::OscValue::Bool(v) => v,
-                            osc::OscValue::Float(v) => v > 0.5,
-                        },
-                    });
-                }
-            },
-        ) {
+        match OscReceiver::start(port.parse().unwrap_or(9001), move |msg| {
+            if msg.address == "/usercamera/OrientationIsLandscape" {
+                let _ = cmd_tx.send(RenderCommand::UpdateOrientation {
+                    is_landscape: match msg.value {
+                        osc::OscValue::Int(v) => v != 0,
+                        osc::OscValue::Bool(v) => v,
+                        osc::OscValue::Float(v) => v > 0.5,
+                    },
+                });
+            }
+        }) {
             Ok(receiver) => {
                 log::info!("OSC receiver started on port {port}");
                 *osc = Some(receiver);
@@ -212,21 +196,21 @@ fn main() {
         .join("vrc-recorder");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("vrc-recorder.log");
-    let log_file = std::fs::File::create(&log_path)
-        .expect("Failed to create log file");
+    let log_file = std::fs::File::create(&log_path).expect("Failed to create log file");
 
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Pipe(Box::new(log_file)))
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .init();
 
     // Log panics
     let log_path_clone = log_path.clone();
     std::panic::set_hook(Box::new(move |info| {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log_path_clone) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path_clone)
+        {
             let _ = writeln!(f, "PANIC: {info}");
         }
     }));
@@ -246,9 +230,12 @@ fn main() {
     // Shared preview buffer (render thread writes, protocol handler reads)
     let preview_buf = Arc::new(Mutex::new(Vec::new()));
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
+    let preview_frame_seq = Arc::new(AtomicU64::new(0));
+    let steamvr_overlay_enabled = Arc::new(AtomicBool::new(config.steamvr_overlay));
 
     // Clone before moving into render thread / setup closure
     let is_recording_for_overlay = is_recording.clone();
+    let steamvr_overlay_enabled_for_overlay = steamvr_overlay_enabled.clone();
 
     let render_config = config.clone();
     render_thread::spawn(
@@ -257,12 +244,14 @@ fn main() {
         event_tx,
         preview_buf.clone(),
         preview_dims.clone(),
+        preview_frame_seq.clone(),
         is_recording.clone(),
     );
 
     // Start MJPEG streaming server
     let mjpeg_port = mjpeg_server::start(mjpeg_server::MjpegState {
         jpeg_data: preview_buf.clone(),
+        frame_seq: preview_frame_seq,
     });
 
     let app_state = AppState {
@@ -273,6 +262,7 @@ fn main() {
         preview_buf,
         preview_dims,
         mjpeg_port,
+        steamvr_overlay_enabled,
     };
 
     tauri::Builder::default()
@@ -297,19 +287,17 @@ fn main() {
             TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click {
@@ -331,7 +319,12 @@ fn main() {
             // Spawn SteamVR overlay thread (no-op if disabled in config)
             let overlay_config = app.state::<AppState>().config.lock().unwrap().clone();
             let overlay_cmd_tx = app.state::<AppState>().cmd_tx.lock().unwrap().clone();
-            steamvr::spawn_overlay(overlay_config, overlay_cmd_tx, is_recording_for_overlay.clone());
+            steamvr::spawn_overlay(
+                overlay_config,
+                overlay_cmd_tx,
+                is_recording_for_overlay.clone(),
+                steamvr_overlay_enabled_for_overlay.clone(),
+            );
 
             Ok(())
         })

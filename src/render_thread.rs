@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::Instant;
 
 use glow::HasContext;
@@ -14,19 +14,20 @@ use winit::window::{WindowAttributes, WindowId};
 
 use crate::channels::{RenderCommand, RenderEvent};
 use crate::config::AppConfig;
+use crate::record::pipeline::RecordingPipeline;
 use crate::render::gl_context::GlState;
 use crate::render::preview::PreviewRenderer;
 use crate::render::texture;
-use crate::record::pipeline::RecordingPipeline;
-use crate::spout::receiver::{list_senders, SpoutStream};
+use crate::spout::receiver::{SpoutStream, list_senders};
 
 /// Spawn the render thread with a hidden GL window.
 pub fn spawn(
-    mut config: AppConfig,
+    config: AppConfig,
     cmd_rx: mpsc::Receiver<RenderCommand>,
     event_tx: mpsc::Sender<RenderEvent>,
     preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     preview_dims: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+    preview_frame_seq: Arc<AtomicU64>,
     is_recording: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
@@ -36,7 +37,15 @@ pub fn spawn(
                 .with_any_thread(true)
                 .build()
                 .expect("Failed to create render event loop");
-            let mut state = RenderState::new(config, cmd_rx, event_tx, preview_buf, preview_dims, is_recording);
+            let mut state = RenderState::new(
+                config,
+                cmd_rx,
+                event_tx,
+                preview_buf,
+                preview_dims,
+                preview_frame_seq,
+                is_recording,
+            );
             let _ = event_loop.run_app(&mut state);
         })
         .expect("Failed to spawn render thread")
@@ -61,6 +70,7 @@ struct RenderState {
     preview_fbo: Option<glow::Framebuffer>,
     preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     preview_dims_shared: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+    preview_frame_seq: Arc<AtomicU64>,
     last_preview_mirror: bool,
     last_preview_portrait: bool,
     last_preview_vflip: bool,
@@ -90,6 +100,7 @@ impl RenderState {
         event_tx: mpsc::Sender<RenderEvent>,
         preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
         preview_dims_shared: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+        preview_frame_seq: Arc<AtomicU64>,
         is_recording: Arc<AtomicBool>,
     ) -> Self {
         let output_dir = config.output_dir.clone();
@@ -106,6 +117,7 @@ impl RenderState {
             preview_fbo: None,
             preview_buf,
             preview_dims_shared,
+            preview_frame_seq,
             last_preview_mirror: false,
             last_preview_portrait: false,
             last_preview_vflip: false,
@@ -130,17 +142,11 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera, output_dir } => {
+                RenderCommand::UpdateConfig(config) => {
                     let old_preview = self.config.preview_enabled;
-                    self.config.video_bitrate = bitrate;
-                    self.config.mirror_video = mirror;
-                    self.config.portrait_mode = portrait;
-                    self.config.video_vflip = vflip;
-                    self.config.preview_enabled = preview_enabled;
-                    self.config.mic_enabled = mic_enabled;
-                    self.config.mic_device = mic_device;
-                    self.config.auto_stop_camera = auto_stop_camera;
-                    self.config.output_dir = output_dir.clone();
+                    let preview_enabled = config.preview_enabled;
+                    let output_dir = config.output_dir.clone();
+                    self.config = config;
                     // Keep pipeline's output dir in sync
                     self.recording_pipeline.set_output_dir(output_dir);
                     // Toggle camera Spout output when preview changed and not recording
@@ -177,8 +183,7 @@ impl RenderState {
             let gl: &glow::Context = gl_arc.as_ref();
             let stream = SpoutStream::new(Some(name));
             if let Some(ref info) = stream.info {
-                self.spout_tex =
-                    Some(texture::create_input_texture(gl, info.width, info.height));
+                self.spout_tex = Some(texture::create_input_texture(gl, info.width, info.height));
                 self.spout_tex_dims = Some((info.width, info.height));
             }
             if stream.connected {
@@ -220,7 +225,8 @@ impl RenderState {
             .map(|i| (i.width, i.height))
             .unwrap_or((1920, 1080));
         (
-            w, h,
+            w,
+            h,
             self.config.video_bitrate.clone(),
             self.config.mirror_video,
             self.config.portrait_mode,
@@ -229,7 +235,9 @@ impl RenderState {
     }
 
     fn start_recording(&mut self) {
-        if self.recording { return; }
+        if self.recording {
+            return;
+        }
         // Auto-disable preview to save resources for recording
         if self.config.preview_enabled {
             self.config.preview_enabled = false;
@@ -252,7 +260,13 @@ impl RenderState {
         let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
         if let Some(gl) = self.gl.as_ref() {
             match self.recording_pipeline.start(
-                gl, w, h, &bitrate, mirror, portrait, vflip,
+                gl,
+                w,
+                h,
+                &bitrate,
+                mirror,
+                portrait,
+                vflip,
                 self.config.mic_enabled,
                 self.config.mic_device.as_deref(),
             ) {
@@ -264,7 +278,9 @@ impl RenderState {
                     log::info!("Recording started");
                 }
                 Err(e) => {
-                    let _ = self.event_tx.send(RenderEvent::Error { message: e.clone() });
+                    let _ = self
+                        .event_tx
+                        .send(RenderEvent::Error { message: e.clone() });
                     log::error!("Failed to start recording: {e}");
                 }
             }
@@ -272,30 +288,86 @@ impl RenderState {
     }
 
     fn stop_recording(&mut self) {
-        if !self.recording { return; }
-        let tex = self.spout_tex;
-        if let Some(gl) = self.gl.as_ref() {
-            if let Some(t) = tex {
-                let _ = self.recording_pipeline.stop(gl, t);
-            }
+        if !self.recording {
+            return;
         }
+        let tex = self.spout_tex;
+        let final_path = if let Some(gl) = self.gl.as_ref() {
+            tex.and_then(|t| {
+                self.recording_pipeline
+                    .stop(gl, t)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .ok()
+            })
+        } else {
+            None
+        };
         self.recording = false;
         self.is_recording.store(false, Ordering::Relaxed);
         self.recording_start = None;
         self.send_camera_stop_osc();
-        let _ = self.event_tx.send(RenderEvent::RecordingStopped {
-            final_path: None,
-        });
+        let _ = self
+            .event_tx
+            .send(RenderEvent::RecordingStopped { final_path });
         log::info!("Recording stopped");
     }
 
+    fn stop_recording_for_source_change(&mut self, gl: &glow::Context) {
+        if !self.recording {
+            return;
+        }
+
+        let final_path = if let Some(t) = self.spout_tex {
+            match self.recording_pipeline.stop(gl, t) {
+                Ok(p) => Some(p.to_string_lossy().into_owned()),
+                Err(e) => {
+                    let _ = self
+                        .event_tx
+                        .send(RenderEvent::Error { message: e.clone() });
+                    log::error!("Failed to stop recording after source change: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        self.recording = false;
+        self.is_recording.store(false, Ordering::Relaxed);
+        self.recording_start = None;
+        self.send_camera_stop_osc();
+        let _ = self
+            .event_tx
+            .send(RenderEvent::RecordingStopped { final_path });
+        log::info!("Recording stopped because source resolution changed");
+    }
+
+    fn recreate_spout_texture(&mut self, gl: &glow::Context, width: u32, height: u32) {
+        if let Some(old_tex) = self.spout_tex.take() {
+            unsafe {
+                gl.delete_texture(old_tex);
+            }
+        }
+
+        if let Some(old_preview) = self.preview_renderer.take() {
+            old_preview.destroy(gl);
+        }
+
+        self.spout_tex = Some(texture::create_input_texture(gl, width, height));
+        self.spout_tex_dims = Some((width, height));
+    }
+
     fn send_camera_osc(&self) {
-        if !self.config.auto_camera { return; }
+        if !self.config.auto_camera {
+            return;
+        }
         self.send_spout_streaming_osc(true);
     }
 
     fn send_camera_stop_osc(&self) {
-        if !self.config.auto_stop_camera { return; }
+        if !self.config.auto_stop_camera {
+            return;
+        }
         self.send_spout_streaming_osc(false);
     }
 
@@ -306,7 +378,10 @@ impl RenderState {
         };
         std::thread::spawn(move || {
             crate::osc::send_osc(port, "/usercamera/Streaming", &rosc::OscType::Bool(enabled)).ok();
-            log::info!("OSC: Spout {}", if enabled { "enabled" } else { "disabled" });
+            log::info!(
+                "OSC: Spout {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
         });
     }
 
@@ -334,8 +409,11 @@ impl RenderState {
         // Create texture on first connection
         if stream.info.is_some() && self.spout_tex.is_none() {
             let info = stream.info.as_ref().unwrap();
-            self.spout_tex =
-                Some(texture::create_input_texture(&gl_arc, info.width, info.height));
+            self.spout_tex = Some(texture::create_input_texture(
+                &gl_arc,
+                info.width,
+                info.height,
+            ));
             self.spout_tex_dims = Some((info.width, info.height));
         }
 
@@ -344,23 +422,19 @@ impl RenderState {
             let new_dims = (info.width, info.height);
             if self.spout_tex_dims.is_some() && self.spout_tex_dims != Some(new_dims) {
                 let (old_w, old_h) = self.spout_tex_dims.unwrap();
-                log::info!("Spout resolution changed: {old_w}x{old_h} -> {}x{}", new_dims.0, new_dims.1);
+                log::info!(
+                    "Spout resolution changed: {old_w}x{old_h} -> {}x{}",
+                    new_dims.0,
+                    new_dims.1
+                );
 
-                // Stop recording if active
-                if self.recording {
-                    let tex = self.spout_tex;
-                    if let Some(gl) = self.gl.as_ref() {
-                        if let Some(t) = tex {
-                            let _ = self.recording_pipeline.stop(gl, t);
-                        }
-                    }
-                    self.recording = false;
-                    self.recording_start = None;
-                }
+                self.stop_recording_for_source_change(&gl_arc);
+                self.recreate_spout_texture(&gl_arc, new_dims.0, new_dims.1);
 
                 self.config.save();
                 let _ = self.event_tx.send(RenderEvent::ResolutionChanged {
-                    old_w, old_h,
+                    old_w,
+                    old_h,
                     new_w: new_dims.0,
                     new_h: new_dims.1,
                 });
@@ -429,9 +503,7 @@ impl RenderState {
             if let Some(old) = self.preview_renderer.take() {
                 old.destroy(gl);
             }
-            self.preview_renderer = Some(PreviewRenderer::new(
-                gl, pw, ph, mirror, portrait, vflip,
-            ));
+            self.preview_renderer = Some(PreviewRenderer::new(gl, pw, ph, mirror, portrait, vflip));
             self.last_preview_mirror = mirror;
             self.last_preview_portrait = portrait;
             self.last_preview_vflip = vflip;
@@ -464,25 +536,26 @@ impl RenderState {
             );
 
             gl.read_pixels(
-                0, 0,
-                out_w as i32, out_h as i32,
-                glow::RGBA, glow::UNSIGNED_BYTE,
+                0,
+                0,
+                out_w as i32,
+                out_h as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
                 glow::PixelPackData::Slice(Some(&mut pixels[..])),
             );
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         }
 
         // JPEG encode and write to shared buffer
-        let rgb: Vec<u8> = pixels
-            .chunks(4)
-            .flat_map(|c| [c[0], c[1], c[2]])
-            .collect();
+        let rgb: Vec<u8> = pixels.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
 
         let mut jpeg_buf = Vec::new();
         {
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 80);
             use image::ImageEncoder;
-            if let Err(e) = encoder.write_image(&rgb, out_w, out_h, image::ExtendedColorType::Rgb8) {
+            if let Err(e) = encoder.write_image(&rgb, out_w, out_h, image::ExtendedColorType::Rgb8)
+            {
                 log::error!("Preview JPEG encode failed: {e}");
                 return;
             }
@@ -496,12 +569,17 @@ impl RenderState {
             let mut dims = self.preview_dims_shared.lock().unwrap();
             *dims = (out_w, out_h);
         }
+        // Bump frame sequence so the MJPEG server detects the new frame
+        // even when consecutive JPEGs compress to the same length.
+        self.preview_frame_seq.fetch_add(1, Ordering::Relaxed);
 
         self.last_preview_sent = Some(now);
     }
 
     fn process_recording(&mut self) {
-        if !self.recording { return; }
+        if !self.recording {
+            return;
+        }
         let gl = match &self.gl {
             Some(gl) => gl.as_ref(),
             None => return,

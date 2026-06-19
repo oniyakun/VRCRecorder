@@ -118,29 +118,35 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    pub fn stop(&mut self, gl: &glow::Context, spout_tex: glow::Texture) -> Result<(), String> {
-        // Stop audio capture first, then drain remaining data
+    /// Stop recording and return the expected output file path.
+    /// The actual encoding/merging continues on a background thread;
+    /// the returned path reflects where the final .mp4 will be saved.
+    pub fn stop(&mut self, gl: &glow::Context, spout_tex: glow::Texture) -> Result<PathBuf, String> {
+        // Stop audio capture first, then flush remaining data to temp file
         let audio_data = if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
             std::thread::sleep(std::time::Duration::from_millis(50));
-            let remaining = audio.drain();
-            log::info!("System audio captured: {} bytes", remaining.len());
-            Some((remaining, audio.sample_rate(), audio.channels()))
+            let result = audio.finish();
+            if let Some((ref path, _, _)) = result {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                log::info!("System audio captured: {} bytes", size);
+            }
+            result
         } else {
             None
         };
 
-        // Stop and drain mic capture
+        // Stop and flush mic capture
         let mic_data = if let Some(ref mut mic) = self.mic_capture {
             mic.stop();
             std::thread::sleep(std::time::Duration::from_millis(50));
-            let remaining = mic.drain();
-            log::info!("Mic audio captured: {} bytes", remaining.len());
-            if remaining.is_empty() {
-                None
-            } else {
-                Some((remaining, mic.sample_rate(), mic.channels()))
-            }
+            let result = mic.finish();
+            let is_empty = result.as_ref().map_or(true, |(path, _, _)| {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                log::info!("Mic audio captured: {} bytes", size);
+                size == 0
+            });
+            if is_empty { None } else { result }
         } else {
             None
         };
@@ -190,8 +196,14 @@ impl RecordingPipeline {
         self.dropped_frames = 0;
         self.audio_capture = None;
 
+        // Compute the expected final output path now so we can return it
+        // to the frontend immediately. The background thread uses the same path.
+        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let final_output_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
+
         // Finish ffmpeg encoding + merge audio on background thread.
         if let Some(mut enc) = encoder {
+            let final_path_for_thread = final_output_path.clone();
             std::thread::Builder::new()
                 .name("encoder-finish".into())
                 .spawn(move || {
@@ -211,8 +223,7 @@ impl RecordingPipeline {
                                 return;
                             }
                         };
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-                        let final_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
+                        let final_path = final_path_for_thread;
 
                         let video_duration = frame_count as f64 / 60.0;
                         match merge_audio_video(
@@ -240,7 +251,7 @@ impl RecordingPipeline {
                 .map_err(|e| format!("Failed to spawn finish thread: {e}"))?;
         }
 
-        Ok(())
+        Ok(final_output_path)
     }
 
     pub fn check_mic_device(&mut self) {
@@ -351,13 +362,11 @@ fn find_ffmpeg() -> Result<PathBuf, String> {
 fn merge_audio_video(
     ffmpeg_path: &PathBuf,
     video_path: &PathBuf,
-    audio_data: Option<(Vec<u8>, u32, u16)>,
-    mic_data: Option<(Vec<u8>, u32, u16)>,
+    audio_data: Option<(PathBuf, u32, u16)>,
+    mic_data: Option<(PathBuf, u32, u16)>,
     output_path: &PathBuf,
     video_duration_secs: f64,
 ) -> Result<(), String> {
-    let audio_path = output_path.with_extension("sys.pcm");
-    let mic_path = output_path.with_extension("mic.pcm");
     let mut cleanup_paths: Vec<PathBuf> = Vec::new();
 
     let mut cmd = std::process::Command::new(ffmpeg_path);
@@ -371,26 +380,24 @@ fn merge_audio_video(
     let has_sys = audio_data.is_some();
     let has_mic = mic_data.is_some();
 
-    // Add system audio input if present
-    if let Some((pcm, rate, ch)) = audio_data {
-        std::fs::write(&audio_path, &pcm)
-            .map_err(|e| format!("Failed to write system audio: {e}"))?;
-        cleanup_paths.push(audio_path.clone());
+    // Add system audio input if present — file is already written to disk
+    // by AudioCapture, no need to write again.
+    if let Some((pcm_path, rate, ch)) = audio_data {
+        cleanup_paths.push(pcm_path.clone());
         cmd.arg("-f").arg("s16le")
             .arg("-ar").arg(rate.to_string())
             .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&audio_path);
+            .arg("-i").arg(&pcm_path);
     }
 
-    // Add mic audio input if present
-    if let Some((pcm, rate, ch)) = mic_data {
-        std::fs::write(&mic_path, &pcm)
-            .map_err(|e| format!("Failed to write mic audio: {e}"))?;
-        cleanup_paths.push(mic_path.clone());
+    // Add mic audio input if present — file is already written to disk
+    // by MicCapture, no need to write again.
+    if let Some((pcm_path, rate, ch)) = mic_data {
+        cleanup_paths.push(pcm_path.clone());
         cmd.arg("-f").arg("s16le")
             .arg("-ar").arg(rate.to_string())
             .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&mic_path);
+            .arg("-i").arg(&pcm_path);
     }
 
     match (has_sys, has_mic) {
