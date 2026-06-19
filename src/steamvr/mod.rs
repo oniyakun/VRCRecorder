@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Mutex;
 
 use crate::channels::RenderCommand;
 use crate::config::AppConfig;
@@ -39,6 +40,7 @@ pub fn spawn_overlay(
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
+    language: Arc<Mutex<Option<String>>>,
 ) {
     enabled.store(config.steamvr_overlay, Ordering::Relaxed);
 
@@ -51,7 +53,12 @@ pub fn spawn_overlay(
                     continue;
                 }
 
-                overlay_main(cmd_tx.clone(), is_recording.clone(), enabled.clone());
+                overlay_main(
+                    cmd_tx.clone(),
+                    is_recording.clone(),
+                    enabled.clone(),
+                    language.clone(),
+                );
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         })
@@ -62,6 +69,7 @@ fn overlay_main(
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
+    language: Arc<Mutex<Option<String>>>,
 ) {
     // ---- Step 1: Load DLL (retry until SteamVR is available) ----
     let dll = loop {
@@ -287,7 +295,12 @@ fn overlay_main(
 
     // ---- Step 9: Generate and set initial texture ----
     log::info!("SteamVR overlay: step 9 - setting texture...");
-    let initial_tex = texture::generate(false);
+    let initial_lang = language
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
+    let initial_tex = texture::generate(false, &initial_lang);
     if std::fs::write(&tex_path, &initial_tex).is_ok() {
         let tex_cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
         let tex_ptr = tex_cstr.as_ptr() as *const u8;
@@ -318,6 +331,11 @@ fn overlay_main(
         n_priority: 0,
     };
     let mut was_recording = is_recording.load(Ordering::Relaxed);
+    let mut was_lang = language
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(11));
@@ -390,11 +408,17 @@ fn overlay_main(
             }
         }
 
-        // Update texture when recording state changes
+        // Update texture when recording state or language changes
         let now_recording = is_recording.load(Ordering::Relaxed);
-        if now_recording != was_recording {
+        let now_lang = language
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "en".to_string());
+        if now_recording != was_recording || now_lang != was_lang {
             was_recording = now_recording;
-            let tex = texture::generate(now_recording);
+            was_lang = now_lang.clone();
+            let tex = texture::generate(now_recording, &now_lang);
             if std::fs::write(&tex_path, &tex).is_ok() {
                 let cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
                 let ptr = cstr.as_ptr() as *const u8;

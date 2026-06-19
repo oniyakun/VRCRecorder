@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub mic_device: Option<String>,
     #[serde(default = "default_steamvr_overlay")]
     pub steamvr_overlay: bool,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_video_bitrate() -> String {
@@ -103,6 +105,7 @@ impl Default for AppConfig {
             mic_enabled: true,
             mic_device: None,
             steamvr_overlay: true,
+            language: None,
         }
     }
 }

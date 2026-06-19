@@ -32,6 +32,7 @@ pub struct AppState {
     pub preview_dims: Arc<Mutex<(u32, u32)>>,
     pub mjpeg_port: u16,
     pub steamvr_overlay_enabled: Arc<AtomicBool>,
+    pub language: Arc<Mutex<Option<String>>>,
 }
 
 // ===== Tauri Commands =====
@@ -100,6 +101,11 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     state
         .steamvr_overlay_enabled
         .store(render_config.steamvr_overlay, Ordering::Relaxed);
+
+    {
+        let mut lang = state.language.lock().unwrap();
+        *lang = render_config.language.clone();
+    }
 
     sync_osc(&state);
 
@@ -232,10 +238,12 @@ fn main() {
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
     let preview_frame_seq = Arc::new(AtomicU64::new(0));
     let steamvr_overlay_enabled = Arc::new(AtomicBool::new(config.steamvr_overlay));
+    let language = Arc::new(Mutex::new(config.language.clone()));
 
     // Clone before moving into render thread / setup closure
     let is_recording_for_overlay = is_recording.clone();
     let steamvr_overlay_enabled_for_overlay = steamvr_overlay_enabled.clone();
+    let language_for_overlay = language.clone();
 
     let render_config = config.clone();
     render_thread::spawn(
@@ -263,6 +271,7 @@ fn main() {
         preview_dims,
         mjpeg_port,
         steamvr_overlay_enabled,
+        language: language.clone(),
     };
 
     tauri::Builder::default()
@@ -274,9 +283,22 @@ fn main() {
             let (icon_w, icon_h) = logo_rgba.dimensions();
             let icon = tauri::image::Image::new_owned(logo_rgba.into_raw(), icon_w, icon_h);
 
-            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)
+            let (show_text, quit_text) = match app
+                .state::<AppState>()
+                .config
+                .lock()
+                .unwrap()
+                .language
+                .as_deref()
+            {
+                Some("zh-CN") => ("显示", "退出"),
+                Some("ja") => ("表示", "終了"),
+                _ => ("Show", "Quit"),
+            };
+
+            let show_item = MenuItem::with_id(app, "show", show_text, true, None::<&str>)
                 .expect("Failed to create Show menu item");
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+            let quit_item = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)
                 .expect("Failed to create Quit menu item");
             let menu = MenuBuilder::new(app)
                 .item(&show_item)
@@ -324,6 +346,7 @@ fn main() {
                 overlay_cmd_tx,
                 is_recording_for_overlay.clone(),
                 steamvr_overlay_enabled_for_overlay.clone(),
+                language_for_overlay.clone(),
             );
 
             Ok(())

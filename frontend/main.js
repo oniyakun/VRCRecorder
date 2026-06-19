@@ -4,15 +4,15 @@
     var $ = function(id) { return document.getElementById(id); };
     var status = function(msg) { var el = $('status-info'); if (el) el.textContent = msg; console.log('[status]', msg); };
 
-    status('JS loaded');
+    status(t('status.js_loaded'));
 
     if (!ipc) {
-        status('ERROR: __TAURI_INTERNALS__ missing');
+        status(t('status.ipc_missing'));
         return;
     }
 
     var invoke = function(cmd, args) { return ipc.invoke(cmd, args || {}); };
-    status('IPC OK');
+    status(t('status.ipc_ok'));
 
     function playSound(path) {
         var audio = new Audio(path);
@@ -46,7 +46,7 @@
                     empty.className = 'setting-item';
                     empty.style.color = 'rgba(255,255,255,0.3)';
                     empty.style.fontStyle = 'italic';
-                    empty.textContent = 'No senders found';
+                    empty.textContent = t('source.no_senders');
                     c.appendChild(empty);
                 } else {
                     state.senders.forEach(function(s) {
@@ -70,13 +70,13 @@
 
             case 'SenderConnected':
                 state.connected = true; state.senderName = d.name;
-                status('Connected: ' + d.name + ' ' + d.width + 'x' + d.height);
+                status(t('status.connected', {name: d.name, width: d.width, height: d.height}));
                 $('meta-resolution').textContent = d.width + 'x' + d.height;
                 break;
 
             case 'SenderDisconnected':
                 state.connected = false; state.senderName = null;
-                status('Not connected');
+                status(t('status.not_connected'));
                 $('no-signal').style.display = 'block';
                 $('meta-resolution').textContent = '--';
                 break;
@@ -85,7 +85,7 @@
                 state.recording = true;
                 $('recordBtn').classList.add('recording');
                 $('live-tag').style.color = '#FF3B30';
-                $('live-tag-text').textContent = 'REC 00:00:00';
+                $('live-tag-text').textContent = t('recording.rec_prefix', {time: '00:00:00'});
                 playSound('sound/start.mp3');
                 break;
 
@@ -93,11 +93,11 @@
                 state.recording = false; state.elapsedSecs = 0;
                 $('recordBtn').classList.remove('recording');
                 $('live-tag').style.color = '';
-                $('live-tag-text').textContent = 'PREVIEW MODE';
-                $('meta-elapsed').textContent = '00:00:00';
+                $('live-tag-text').textContent = t('preview.mode');
+                $('meta-elapsed').textContent = t('recording.elapsed_default');
                 playSound('sound/stop.mp3');
                 if (d.final_path) {
-                    status('Saved: ' + d.final_path);
+                    status(t('status.saved', {path: d.final_path}));
                 }
                 break;
 
@@ -108,13 +108,13 @@
                 var s = state.elapsedSecs % 60;
                 var fmt = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
                 $('meta-elapsed').textContent = fmt;
-                if (state.recording) $('live-tag-text').textContent = 'REC ' + fmt;
+                if (state.recording) $('live-tag-text').textContent = t('recording.rec_prefix', {time: fmt});
                 break;
 
             // PreviewFrame is handled via binary polling (see pollPreview below)
 
             case 'Error':
-                status('Error: ' + (d.message || ''));
+                status(t('status.error_generic', {message: d.message || ''}));
                 break;
 
             case 'ConfigChanged':
@@ -134,7 +134,7 @@
                 break;
 
             case 'ResolutionChanged':
-                status('Resolution changed: ' + d.old_w + 'x' + d.old_h + ' -> ' + d.new_w + 'x' + d.new_h);
+                status(t('status.resolution_changed', {old_w: d.old_w, old_h: d.old_h, new_w: d.new_w, new_h: d.new_h}));
                 $('meta-resolution').textContent = d.new_w + 'x' + d.new_h;
                 break;
         }
@@ -163,9 +163,9 @@
             };
             img.src = url;
             img.style.display = '';
-            $('no-signal').textContent = 'No Signal';
+            $('no-signal').textContent = t('preview.no_signal');
         }).catch(function(e) {
-            status('MJPEG port error: ' + e);
+            status(t('status.error_mjpeg', {error: e}));
         });
     }
 
@@ -173,7 +173,7 @@
         var img = $('preview-img');
         img.src = '';
         img.style.display = 'none';
-        $('no-signal').textContent = 'Preview Off';
+        $('no-signal').textContent = t('preview.off');
         $('no-signal').style.display = 'block';
     }
 
@@ -184,18 +184,18 @@
     }
 
     // ---- Tauri Commands ----
-    window.connectSender = function(name) { invoke('connect_sender', { name: name }).catch(function(e) { status('Connect error: ' + e); }); };
+    window.connectSender = function(name) { invoke('connect_sender', { name: name }).catch(function(e) { status(t('status.error_connect', {error: e})); }); };
     window.toggleRecord = function() {
-        if (state.recording) invoke('stop_recording').catch(function(e) { status('Stop error: ' + e); });
-        else invoke('start_recording').catch(function(e) { status('Start error: ' + e); });
+        if (state.recording) invoke('stop_recording').catch(function(e) { status(t('status.error_stop', {error: e})); });
+        else invoke('start_recording').catch(function(e) { status(t('status.error_start', {error: e})); });
     };
 
     // ---- UI Bindings ----
     $('osc-enable-row').addEventListener('click', function() {
-        if (!state.config) return status('Config not loaded yet');
+        if (!state.config) return status(t('status.config_not_loaded'));
         state.config.osc_enabled = toggleEl('osc-toggle');
         $('osc-details').style.display = state.config.osc_enabled ? 'block' : 'none';
-        invoke('update_config', { config: state.config }).catch(function(e) { status('Config save error: ' + e); });
+        invoke('update_config', { config: state.config }).catch(function(e) { status(t('status.config_save_error', {error: e})); });
     });
 
     $('auto-camera-row').addEventListener('click', function() {
@@ -229,7 +229,7 @@
         invoke('list_mic_devices').then(function(devices) {
             var sel = $('mic-select');
             var current = sel.value;
-            sel.innerHTML = '<option value="">Default Device</option>';
+            sel.innerHTML = '<option value="">' + t('audio.default_device') + '</option>';
             (devices || []).forEach(function(d) {
                 var opt = document.createElement('option');
                 opt.value = d;
@@ -279,6 +279,15 @@
     $('dock-portrait').addEventListener('click', function() { $('portrait-row').click(); });
     $('dock-vflip').addEventListener('click', function() { $('vflip-row').click(); });
 
+    // Language selector
+    $('language-select').addEventListener('change', function() {
+        if (!state.config) return;
+        var newLang = this.value;
+        state.config.language = newLang;
+        window.setLanguage(newLang);
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
     $('osc-port').addEventListener('change', function() {
         if (!state.config) return;
         state.config.osc_port = this.value;
@@ -303,8 +312,10 @@
             shortenPath(dir);
             invoke('update_config', { config: state.config }).catch(function() {});
         }).catch(function(e) {
+            // "No folder selected" is a Rust-side error string used for programmatic comparison;
+            // we match against the English string since the backend always returns English errors.
             if (e && e.toString().indexOf('No folder selected') === -1) {
-                status('Folder select error: ' + e);
+                status(t('status.error_folder', {error: e}));
             }
         });
     });
@@ -318,7 +329,20 @@
     // ---- Init ----
     invoke('get_config').then(function(cfg) {
         state.config = cfg;
-        status('Config loaded OK');
+
+        // --- Language detection / load ---
+        if (cfg.language && window.__I18N__[cfg.language]) {
+            window.setLanguage(cfg.language);
+        } else {
+            // First run: auto-detect from system
+            var detected = window.detectLanguage();
+            window.setLanguage(detected);
+            state.config.language = detected;
+            invoke('update_config', { config: state.config }).catch(function() {});
+        }
+        $('language-select').value = state.config.language || window.detectLanguage();
+
+        status(t('status.config_loaded'));
         setToggle('osc-toggle', cfg.osc_enabled);
         $('osc-details').style.display = cfg.osc_enabled ? 'block' : 'none';
         $('osc-port').value = cfg.osc_port || '9001';
@@ -338,7 +362,7 @@
         $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
         $('mic-select').value = cfg.mic_device || '';
         $('meta-bitrate').textContent = cfg.video_bitrate || '10M';
-        shortenPath(cfg.output_dir || 'Default (Videos)');
+        shortenPath(cfg.output_dir || t('storage.default_videos'));
 
         // Start or skip preview based on saved config
         if (cfg.preview_enabled === true) {
@@ -347,8 +371,8 @@
             stopPreview();
         }
     }).catch(function(e) {
-        status('Config load FAILED: ' + (e ? e.toString() : 'unknown'));
+        status(t('status.config_load_failed', {error: e ? e.toString() : 'unknown'}));
     });
 
-    status('Init complete');
+    status(t('status.init_complete'));
 })();

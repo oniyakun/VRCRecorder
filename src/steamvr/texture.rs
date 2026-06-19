@@ -14,22 +14,34 @@ const DIM: [u8; 3] = [100, 100, 108];
 
 /// Generate a 512x256 RGBA PNG for the dashboard overlay.
 /// `is_recording` controls the status indicator color and text.
-pub fn generate(is_recording: bool) -> Vec<u8> {
+/// `language` selects translated strings (currently ASCII-only due to pixel font limitations).
+pub fn generate(is_recording: bool, language: &str) -> Vec<u8> {
     let mut img = RgbaImage::from_pixel(W, H, image::Rgba([BG[0], BG[1], BG[2], 255]));
 
     // Status dot (left side, vertically centered)
     let color = if is_recording { RED } else { GREEN };
     filled_circle(&mut img, 72, 100, 40, color);
 
-    // App label "VRCRecorder" in pixel text
-    draw_text(&mut img, 140, 60, "VRCRecorder", WHITE, 2);
+    // Select strings based on language
+    // NOTE: The pixel font only supports A-Z, 0-9, and space.
+    // CJK characters cannot be rendered. If a CJK pixel font is added later,
+    // update this match to return native-language strings.
+    let (app_label, status_text, hint) = match language {
+        // All languages use ASCII for now due to pixel font limitation
+        _ => (
+            "VRCRecorder",
+            if is_recording { "RECORDING" } else { "READY" },
+            "Bind toggle_record action to a controller button",
+        ),
+    };
+
+    // App label
+    draw_text(&mut img, 140, 60, app_label, WHITE, 2);
 
     // Status text
-    let status = if is_recording { "RECORDING" } else { "READY" };
-    draw_text(&mut img, 140, 130, status, color, 3);
+    draw_text(&mut img, 140, 130, status_text, color, 3);
 
     // Hint text
-    let hint = "Bind toggle_record action to a controller button";
     draw_text(&mut img, 24, 210, hint, DIM, 1);
 
     // Encode PNG
