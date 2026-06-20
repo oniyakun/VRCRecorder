@@ -22,11 +22,7 @@ impl PboReader {
             let mut pbos = [gl.create_buffer().unwrap(), gl.create_buffer().unwrap()];
             for pbo in &pbos {
                 gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(*pbo));
-                gl.buffer_data_size(
-                    glow::PIXEL_PACK_BUFFER,
-                    size,
-                    glow::STREAM_READ,
-                );
+                gl.buffer_data_size(glow::PIXEL_PACK_BUFFER, size, glow::STREAM_READ);
             }
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
 
@@ -92,7 +88,11 @@ impl PboReader {
                 log::warn!("PBO map returned null");
                 Vec::new()
             } else {
-                std::slice::from_raw_parts(ptr as *const u8, (self.width * self.height * 4) as usize).to_vec()
+                std::slice::from_raw_parts(
+                    ptr as *const u8,
+                    (self.width * self.height * 4) as usize,
+                )
+                .to_vec()
             };
             gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
@@ -102,11 +102,7 @@ impl PboReader {
         self.read_index = self.write_index;
         self.write_index = (self.write_index + 1) % 2;
 
-        if data.is_empty() {
-            None
-        } else {
-            Some(data)
-        }
+        if data.is_empty() { None } else { Some(data) }
     }
 
     pub fn resize(&mut self, gl: &glow::Context, width: u32, height: u32) {
@@ -186,9 +182,12 @@ impl PboReader {
                     0,
                 );
                 gl.read_pixels(
-                    0, 0,
-                    self.width as i32, self.height as i32,
-                    glow::RGBA, glow::UNSIGNED_BYTE,
+                    0,
+                    0,
+                    self.width as i32,
+                    self.height as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
                     glow::PixelPackData::Slice(Some(&mut pixels[..])),
                 );
                 gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);

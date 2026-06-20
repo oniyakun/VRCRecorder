@@ -1,4 +1,4 @@
-use spout_rs::{Directory, SpoutReceiver, SenderInfo};
+use spout_rs::{Directory, SenderInfo, SpoutReceiver};
 
 /// Wraps a SpoutReceiver with connection lifecycle management.
 pub struct SpoutStream {

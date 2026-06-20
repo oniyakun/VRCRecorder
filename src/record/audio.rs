@@ -11,7 +11,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 pub struct AudioCapture {
     stream: Option<cpal::Stream>,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
     sample_rate: u32,
     channels: u16,
 }
@@ -38,15 +38,11 @@ impl AudioCapture {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        log::info!(
-            "Audio capture: {} Hz, {} channels",
-            sample_rate,
-            channels
-        );
+        log::info!("Audio capture: {} Hz, {} channels", sample_rate, channels);
 
         // Create temp file for PCM data — avoids unbounded memory growth
-        let file_path = std::env::temp_dir()
-            .join(format!("vrc_sys_audio_{}.pcm", std::process::id()));
+        let file_path =
+            std::env::temp_dir().join(format!("vrc_sys_audio_{}.pcm", std::process::id()));
         let file = File::create(&file_path)
             .map_err(|e| format!("Failed to create audio temp file: {e}"))?;
         let writer = Arc::new(Mutex::new(Some(BufWriter::with_capacity(256 * 1024, file))));
@@ -84,7 +80,7 @@ impl AudioCapture {
         Ok(Self {
             stream: Some(stream),
             writer,
-            file_path,
+            file_path: Some(file_path),
             sample_rate,
             channels,
         })
@@ -97,7 +93,8 @@ impl AudioCapture {
         if let Ok(mut guard) = self.writer.lock() {
             if let Some(writer) = guard.take() {
                 drop(writer); // flush and close
-                return Some((self.file_path.clone(), self.sample_rate, self.channels));
+                let file_path = self.file_path.take()?;
+                return Some((file_path, self.sample_rate, self.channels));
             }
         }
         None
@@ -113,7 +110,9 @@ impl AudioCapture {
 
     /// Current size of the captured audio file in bytes.
     pub fn buffer_size(&self) -> u64 {
-        std::fs::metadata(&self.file_path)
+        self.file_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok())
             .map(|m| m.len())
             .unwrap_or(0)
     }
@@ -129,6 +128,8 @@ impl AudioCapture {
 impl Drop for AudioCapture {
     fn drop(&mut self) {
         // Clean up temp file if finish() was never called
-        let _ = std::fs::remove_file(&self.file_path);
+        if let Some(path) = self.file_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

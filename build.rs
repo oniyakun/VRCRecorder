@@ -13,7 +13,6 @@ fn main() {
         let _ = std::fs::create_dir_all(icons_dir);
         std::fs::write(icons_dir.join("icon.ico"), &ico_bytes)
             .expect("Failed to write icons/icon.ico");
-
     }
 
     // --- Tauri build (expects icons/icon.ico to exist) ---
@@ -40,18 +39,21 @@ fn main() {
     // --- Copy Spout.dll to target ---
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let spout_src = std::path::PathBuf::from("vendor/Spout2/cmake-build/bin/Release/Spout.dll");
-    let spout_dest = std::path::PathBuf::from("target").join(&profile).join("Spout.dll");
+    let spout_dest = std::path::PathBuf::from("target")
+        .join(&profile)
+        .join("Spout.dll");
     if spout_src.exists() {
         let _ = std::fs::create_dir_all(spout_dest.parent().unwrap());
         let _ = std::fs::copy(&spout_src, &spout_dest);
     }
     // Set env var for bundle.rs to find the Spout.dll (absolute path needed for include_bytes!)
-    let spout_abs = spout_dest.canonicalize().unwrap_or_else(|_| {
-        std::env::current_dir().unwrap().join(&spout_dest)
-    });
+    let spout_abs = spout_dest
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&spout_dest));
     println!("cargo:rustc-env=SPOUT_DLL_PATH={}", spout_abs.display());
     // Also set ffmpeg path and all DLL paths
-    let ffmpeg_path = std::path::PathBuf::from("C:/Program Files/Virtual Desktop Streamer/ffmpeg.exe");
+    let ffmpeg_path =
+        std::path::PathBuf::from("C:/Program Files/Virtual Desktop Streamer/ffmpeg.exe");
     if ffmpeg_path.exists() {
         println!("cargo:rustc-env=FFMPEG_EXE_PATH={}", ffmpeg_path.display());
         let ffmpeg_dir = ffmpeg_path.parent().unwrap();
@@ -80,7 +82,9 @@ fn main() {
     let sound_dst = std::path::Path::new("frontend/sound");
     if sound_src.exists() {
         let _ = std::fs::create_dir_all(sound_dst);
-        for entry in std::fs::read_dir(sound_src).unwrap_or_else(|_| std::fs::read_dir(".").unwrap()) {
+        for entry in
+            std::fs::read_dir(sound_src).unwrap_or_else(|_| std::fs::read_dir(".").unwrap())
+        {
             if let Ok(entry) = entry {
                 let path = entry.path();
                 if path.extension().map_or(false, |e| e == "mp3") {

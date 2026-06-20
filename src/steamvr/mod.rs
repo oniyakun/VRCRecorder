@@ -13,9 +13,9 @@ mod texture;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
 
 use crate::channels::RenderCommand;
 use crate::config::AppConfig;

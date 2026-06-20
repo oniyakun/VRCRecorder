@@ -2,8 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, TrySendError};
 use std::sync::OnceLock;
+use std::sync::mpsc::{self, TrySendError};
 use std::thread;
 
 /// Detected video encoder info.
@@ -99,8 +99,7 @@ impl FfmpegEncoder {
         let size = format!("{width}x{height}");
         let rate = format!("{fps}");
 
-        let enc = get_video_encoder(ffmpeg_path)
-            .map_err(|e| e.clone())?;
+        let enc = get_video_encoder(ffmpeg_path).map_err(|e| e.clone())?;
 
         // Build video filter: portrait rotation first, then mirror, then vflip
         let mut filters: Vec<String> = Vec::new();
@@ -124,14 +123,22 @@ impl FfmpegEncoder {
 
         let mut args: Vec<String> = vec![
             "-y".into(),
-            "-f".into(), "rawvideo".into(),
-            "-vcodec".into(), "rawvideo".into(),
-            "-s".into(), size.clone(),
-            "-pix_fmt".into(), "rgba".into(),
-            "-r".into(), rate.clone(),
-            "-i".into(), "-".into(),
-            "-vf".into(), vf,
-            "-c:v".into(), enc.codec.into(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-vcodec".into(),
+            "rawvideo".into(),
+            "-s".into(),
+            size.clone(),
+            "-pix_fmt".into(),
+            "rgba".into(),
+            "-r".into(),
+            rate.clone(),
+            "-i".into(),
+            "-".into(),
+            "-vf".into(),
+            vf,
+            "-c:v".into(),
+            enc.codec.into(),
         ];
         for a in &enc.extra_args {
             args.push((*a).into());
@@ -150,10 +157,7 @@ impl FfmpegEncoder {
             .spawn()
             .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or("ffmpeg stdin not available")?;
+        let mut stdin = child.stdin.take().ok_or("ffmpeg stdin not available")?;
 
         // Stderr reader thread
         let stderr = child.stderr.take();
@@ -217,10 +221,7 @@ impl FfmpegEncoder {
             ));
         }
 
-        let tx = self
-            .tx
-            .as_ref()
-            .ok_or("Encoder not initialized")?;
+        let tx = self.tx.as_ref().ok_or("Encoder not initialized")?;
         match tx.try_send(rgba_data) {
             Ok(()) => Ok(true),
             Err(TrySendError::Full(_)) => Ok(false),
@@ -239,10 +240,7 @@ impl FfmpegEncoder {
             ));
         }
 
-        let tx = self
-            .tx
-            .as_ref()
-            .ok_or("Encoder not initialized")?;
+        let tx = self.tx.as_ref().ok_or("Encoder not initialized")?;
         tx.send(rgba_data)
             .map_err(|_| "Encoder writer thread disconnected".into())
     }

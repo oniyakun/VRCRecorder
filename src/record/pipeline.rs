@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 
 use crate::record::audio::AudioCapture;
 use crate::record::capture::PboReader;
@@ -62,9 +62,9 @@ impl RecordingPipeline {
             .map_err(|e| format!("Failed to create output dir: {e}"))?;
 
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-        let video_path = self.output_dir.join(format!(
-            "VRCRecorder_{timestamp}_video.mp4"
-        ));
+        let video_path = self
+            .output_dir
+            .join(format!("VRCRecorder_{timestamp}_video.mp4"));
 
         let encoder = FfmpegEncoder::start(
             &ffmpeg_path,
@@ -121,7 +121,11 @@ impl RecordingPipeline {
     /// Stop recording and return the expected output file path.
     /// The actual encoding/merging continues on a background thread;
     /// the returned path reflects where the final .mp4 will be saved.
-    pub fn stop(&mut self, gl: &glow::Context, spout_tex: glow::Texture) -> Result<PathBuf, String> {
+    pub fn stop(
+        &mut self,
+        gl: &glow::Context,
+        spout_tex: glow::Texture,
+    ) -> Result<PathBuf, String> {
         // Stop audio capture first, then flush remaining data to temp file
         let audio_data = if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
@@ -195,6 +199,7 @@ impl RecordingPipeline {
         self.frame_count = 0;
         self.dropped_frames = 0;
         self.audio_capture = None;
+        self.mic_capture = None;
 
         // Compute the expected final output path now so we can return it
         // to the frontend immediately. The background thread uses the same path.
@@ -242,7 +247,10 @@ impl RecordingPipeline {
                                 log::error!("Audio merge failed: {e}. Keeping video-only file.");
                                 let _ = std::fs::remove_file(&final_path);
                                 if std::fs::rename(vp, &final_path).is_ok() {
-                                    log::info!("Video-only recording saved to {}", final_path.display());
+                                    log::info!(
+                                        "Video-only recording saved to {}",
+                                        final_path.display()
+                                    );
                                 }
                             }
                         }
@@ -282,7 +290,11 @@ impl RecordingPipeline {
                 Ok(true) => {
                     self.frame_count += 1;
                     if self.frame_count % 120 == 0 {
-                        log::info!("{} frames captured ({} dropped)", self.frame_count, self.dropped_frames);
+                        log::info!(
+                            "{} frames captured ({} dropped)",
+                            self.frame_count,
+                            self.dropped_frames
+                        );
                         if let Some(ref audio) = self.audio_capture {
                             let buf_size = audio.buffer_size();
                             if buf_size > 0 {
@@ -301,7 +313,10 @@ impl RecordingPipeline {
                 Ok(false) => {
                     self.dropped_frames += 1;
                     if self.dropped_frames % 60 == 1 {
-                        log::warn!("Encoder behind: {} frames dropped so far", self.dropped_frames);
+                        log::warn!(
+                            "Encoder behind: {} frames dropped so far",
+                            self.dropped_frames
+                        );
                     }
                 }
                 Err(e) => {
@@ -384,28 +399,39 @@ fn merge_audio_video(
     // by AudioCapture, no need to write again.
     if let Some((pcm_path, rate, ch)) = audio_data {
         cleanup_paths.push(pcm_path.clone());
-        cmd.arg("-f").arg("s16le")
-            .arg("-ar").arg(rate.to_string())
-            .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&pcm_path);
+        cmd.arg("-f")
+            .arg("s16le")
+            .arg("-ar")
+            .arg(rate.to_string())
+            .arg("-ac")
+            .arg(ch.to_string())
+            .arg("-i")
+            .arg(&pcm_path);
     }
 
     // Add mic audio input if present — file is already written to disk
     // by MicCapture, no need to write again.
     if let Some((pcm_path, rate, ch)) = mic_data {
         cleanup_paths.push(pcm_path.clone());
-        cmd.arg("-f").arg("s16le")
-            .arg("-ar").arg(rate.to_string())
-            .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&pcm_path);
+        cmd.arg("-f")
+            .arg("s16le")
+            .arg("-ar")
+            .arg(rate.to_string())
+            .arg("-ac")
+            .arg(ch.to_string())
+            .arg("-i")
+            .arg(&pcm_path);
     }
 
     match (has_sys, has_mic) {
         (true, true) => {
             // Mix system + mic; duration=first uses the first (system) audio as length anchor
-            cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:weights=1 0.5[out]"])
-                .args(["-map", "0:v"])
-                .args(["-map", "[out]"]);
+            cmd.args([
+                "-filter_complex",
+                "[1:a][2:a]amix=inputs=2:duration=first:weights=1 0.5[out]",
+            ])
+            .args(["-map", "0:v"])
+            .args(["-map", "[out]"]);
         }
         (true, false) => {
             cmd.args(["-map", "0:v"]).args(["-map", "1:a"]);
@@ -426,7 +452,8 @@ fn merge_audio_video(
         .args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
         .arg(output_path);
 
-    let output = cmd.output()
+    let output = cmd
+        .output()
         .map_err(|e| format!("Failed to spawn ffmpeg merge: {e}"))?;
 
     // Cleanup temp files

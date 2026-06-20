@@ -128,12 +128,32 @@ impl VROverlay {
         ov_call!(self, OV_DESTROY_OVERLAY, i32, (VROverlayHandle), handle)
     }
 
-    pub unsafe fn set_overlay_flag(&self, handle: VROverlayHandle, flag: i32, enabled: bool) -> i32 {
-        ov_call!(self, OV_SET_OVERLAY_FLAG, i32, (VROverlayHandle, i32, bool), handle, flag, enabled)
+    pub unsafe fn set_overlay_flag(
+        &self,
+        handle: VROverlayHandle,
+        flag: i32,
+        enabled: bool,
+    ) -> i32 {
+        ov_call!(
+            self,
+            OV_SET_OVERLAY_FLAG,
+            i32,
+            (VROverlayHandle, i32, bool),
+            handle,
+            flag,
+            enabled
+        )
     }
 
     pub unsafe fn set_overlay_width_in_meters(&self, handle: VROverlayHandle, width: f32) -> i32 {
-        ov_call!(self, OV_SET_OVERLAY_WIDTH, i32, (VROverlayHandle, f32), handle, width)
+        ov_call!(
+            self,
+            OV_SET_OVERLAY_WIDTH,
+            i32,
+            (VROverlayHandle, f32),
+            handle,
+            width
+        )
     }
 
     pub unsafe fn show_overlay(&self, handle: VROverlayHandle) -> i32 {
@@ -145,23 +165,66 @@ impl VROverlay {
     }
 
     pub unsafe fn poll_next_overlay_event(
-        &self, handle: VROverlayHandle, event: *mut VREvent, size: u32,
+        &self,
+        handle: VROverlayHandle,
+        event: *mut VREvent,
+        size: u32,
     ) -> bool {
-        ov_call!(self, OV_POLL_NEXT_OVERLAY_EVENT, bool, (VROverlayHandle, *mut VREvent, u32), handle, event, size)
+        ov_call!(
+            self,
+            OV_POLL_NEXT_OVERLAY_EVENT,
+            bool,
+            (VROverlayHandle, *mut VREvent, u32),
+            handle,
+            event,
+            size
+        )
     }
 
     pub unsafe fn set_overlay_input_method(&self, handle: VROverlayHandle, method: i32) -> i32 {
-        ov_call!(self, OV_SET_OVERLAY_INPUT_METHOD, i32, (VROverlayHandle, i32), handle, method)
+        ov_call!(
+            self,
+            OV_SET_OVERLAY_INPUT_METHOD,
+            i32,
+            (VROverlayHandle, i32),
+            handle,
+            method
+        )
     }
 
     pub unsafe fn set_overlay_from_file(&self, handle: VROverlayHandle, path: *const u8) -> i32 {
-        ov_call!(self, OV_SET_OVERLAY_FROM_FILE, i32, (VROverlayHandle, *const u8), handle, path)
+        ov_call!(
+            self,
+            OV_SET_OVERLAY_FROM_FILE,
+            i32,
+            (VROverlayHandle, *const u8),
+            handle,
+            path
+        )
     }
 
     pub unsafe fn create_dashboard_overlay(
-        &self, key: *const u8, name: *const u8, main: *mut VROverlayHandle, thumb: *mut VROverlayHandle,
+        &self,
+        key: *const u8,
+        name: *const u8,
+        main: *mut VROverlayHandle,
+        thumb: *mut VROverlayHandle,
     ) -> i32 {
-        ov_call!(self, OV_CREATE_DASHBOARD_OVERLAY, i32, (*const u8, *const u8, *mut VROverlayHandle, *mut VROverlayHandle), key, name, main, thumb)
+        ov_call!(
+            self,
+            OV_CREATE_DASHBOARD_OVERLAY,
+            i32,
+            (
+                *const u8,
+                *const u8,
+                *mut VROverlayHandle,
+                *mut VROverlayHandle
+            ),
+            key,
+            name,
+            main,
+            thumb
+        )
     }
 }
 
@@ -190,24 +253,71 @@ impl VRInput {
         in_call!(self, IN_SET_ACTION_MANIFEST_PATH, i32, (*const u8), path)
     }
 
-    pub unsafe fn get_action_set_handle(&self, name: *const u8, handle: *mut VRActionHandle) -> i32 {
-        in_call!(self, IN_GET_ACTION_SET_HANDLE, i32, (*const u8, *mut VRActionHandle), name, handle)
+    pub unsafe fn get_action_set_handle(
+        &self,
+        name: *const u8,
+        handle: *mut VRActionHandle,
+    ) -> i32 {
+        in_call!(
+            self,
+            IN_GET_ACTION_SET_HANDLE,
+            i32,
+            (*const u8, *mut VRActionHandle),
+            name,
+            handle
+        )
     }
 
     pub unsafe fn get_action_handle(&self, name: *const u8, handle: *mut VRActionHandle) -> i32 {
-        in_call!(self, IN_GET_ACTION_HANDLE, i32, (*const u8, *mut VRActionHandle), name, handle)
+        in_call!(
+            self,
+            IN_GET_ACTION_HANDLE,
+            i32,
+            (*const u8, *mut VRActionHandle),
+            name,
+            handle
+        )
     }
 
     pub unsafe fn update_action_state(
-        &self, sets: *const VRActiveActionSet, struct_size: u32, count: u32,
+        &self,
+        sets: *const VRActiveActionSet,
+        struct_size: u32,
+        count: u32,
     ) -> i32 {
-        in_call!(self, IN_UPDATE_ACTION_STATE, i32, (*const VRActiveActionSet, u32, u32), sets, struct_size, count)
+        in_call!(
+            self,
+            IN_UPDATE_ACTION_STATE,
+            i32,
+            (*const VRActiveActionSet, u32, u32),
+            sets,
+            struct_size,
+            count
+        )
     }
 
     pub unsafe fn get_digital_action_data(
-        &self, action: VRActionHandle, data: *mut InputDigitalActionData, data_size: u32, restrict_to_device: VRInputValueHandle,
+        &self,
+        action: VRActionHandle,
+        data: *mut InputDigitalActionData,
+        data_size: u32,
+        restrict_to_device: VRInputValueHandle,
     ) -> i32 {
-        in_call!(self, IN_GET_DIGITAL_ACTION_DATA, i32, (VRActionHandle, *mut InputDigitalActionData, u32, VRInputValueHandle), action, data, data_size, restrict_to_device)
+        in_call!(
+            self,
+            IN_GET_DIGITAL_ACTION_DATA,
+            i32,
+            (
+                VRActionHandle,
+                *mut InputDigitalActionData,
+                u32,
+                VRInputValueHandle
+            ),
+            action,
+            data,
+            data_size,
+            restrict_to_device
+        )
     }
 }
 
@@ -233,11 +343,24 @@ impl VRApplications {
     }
 
     pub unsafe fn add_application_manifest(&self, path: *const u8, temporary: bool) -> i32 {
-        app_call!(self, APP_ADD_APPLICATION_MANIFEST, i32, (*const u8, bool), path, temporary)
+        app_call!(
+            self,
+            APP_ADD_APPLICATION_MANIFEST,
+            i32,
+            (*const u8, bool),
+            path,
+            temporary
+        )
     }
 
     pub unsafe fn is_application_installed(&self, app_key: *const u8) -> bool {
-        app_call!(self, APP_IS_APPLICATION_INSTALLED, bool, (*const u8), app_key)
+        app_call!(
+            self,
+            APP_IS_APPLICATION_INSTALLED,
+            bool,
+            (*const u8),
+            app_key
+        )
     }
 }
 
@@ -245,7 +368,8 @@ impl VRApplications {
 
 type VrInitFn = unsafe extern "system" fn(*mut i32, i32) -> *mut std::ffi::c_void;
 type VrShutdownFn = unsafe extern "system" fn();
-type VrGetGenericInterfaceFn = unsafe extern "system" fn(*const u8, *mut i32) -> *mut std::ffi::c_void;
+type VrGetGenericInterfaceFn =
+    unsafe extern "system" fn(*const u8, *mut i32) -> *mut std::ffi::c_void;
 
 pub struct OpenVRDll {
     _lib: *mut std::ffi::c_void,
@@ -269,8 +393,7 @@ pub fn find_openvr_dll() -> Option<PathBuf> {
         return Some(steamvr_dll);
     }
     for lib_dir in &[r"C:\Program Files (x86)\Steam", r"D:\Steam", r"E:\Steam"] {
-        let dll = PathBuf::from(lib_dir)
-            .join("steamapps/common/SteamVR/bin/win64/openvr_api.dll");
+        let dll = PathBuf::from(lib_dir).join("steamapps/common/SteamVR/bin/win64/openvr_api.dll");
         if dll.exists() {
             return Some(dll);
         }
@@ -314,7 +437,10 @@ pub fn load_openvr() -> Result<OpenVRDll, String> {
 
     let lib = unsafe { LoadLibraryW(wide.as_ptr()) };
     if lib.is_null() {
-        return Err(format!("Failed to load openvr_api.dll from {}", dll_path.display()));
+        return Err(format!(
+            "Failed to load openvr_api.dll from {}",
+            dll_path.display()
+        ));
     }
 
     macro_rules! resolve {
@@ -340,7 +466,10 @@ pub fn load_openvr() -> Result<OpenVRDll, String> {
 
 unsafe extern "system" {
     fn LoadLibraryW(lpLibFileName: *const u16) -> *mut std::ffi::c_void;
-    fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const i8) -> Option<unsafe extern "C" fn()>;
+    fn GetProcAddress(
+        hModule: *mut std::ffi::c_void,
+        lpProcName: *const i8,
+    ) -> Option<unsafe extern "C" fn()>;
 }
 
 pub fn get_interface(dll: &OpenVRDll, name: &str) -> Result<*mut std::ffi::c_void, String> {
@@ -349,7 +478,9 @@ pub fn get_interface(dll: &OpenVRDll, name: &str) -> Result<*mut std::ffi::c_voi
     let mut error: i32 = 0;
     let ptr = unsafe { (dll.vr_get_generic_interface)(c_name.as_ptr() as *const u8, &mut error) };
     if ptr.is_null() {
-        Err(format!("VR_GetGenericInterface({FNTABLE_PREFIX}{name}) failed, error={error}"))
+        Err(format!(
+            "VR_GetGenericInterface({FNTABLE_PREFIX}{name}) failed, error={error}"
+        ))
     } else {
         Ok(ptr)
     }
