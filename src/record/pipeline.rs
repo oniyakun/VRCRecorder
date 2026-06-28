@@ -118,7 +118,7 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    pub fn stop(&mut self, gl: &glow::Context, spout_tex: glow::Texture) -> Result<(), String> {
+    pub fn stop(&mut self, gl: &glow::Context, spout_tex: Option<glow::Texture>) -> Result<(), String> {
         // Stop audio capture first, then drain remaining data
         let audio_data = if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
@@ -146,17 +146,21 @@ impl RecordingPipeline {
         };
 
         // Flush remaining PBO frames + synchronous read of current Spout
-        // texture to ensure the latest frame is captured.
+        // texture to ensure the latest frame is captured. With no texture
+        // (e.g. source never connected) there is nothing to flush — we still
+        // fall through and finalize the encoder below.
         let mut flush_count = 0u64;
-        if let Some(ref mut pbo) = self.pbo_reader {
-            for data in pbo.flush(gl, spout_tex) {
-                if let Some(ref mut encoder) = self.encoder {
-                    // Blocking send — guarantees final frames are never dropped
-                    if let Err(e) = encoder.push_frame_blocking(data) {
-                        log::error!("Encoder error during final flush: {e}");
-                    } else {
-                        self.frame_count += 1;
-                        flush_count += 1;
+        if let Some(tex) = spout_tex {
+            if let Some(ref mut pbo) = self.pbo_reader {
+                for data in pbo.flush(gl, tex) {
+                    if let Some(ref mut encoder) = self.encoder {
+                        // Blocking send — guarantees final frames are never dropped
+                        if let Err(e) = encoder.push_frame_blocking(data) {
+                            log::error!("Encoder error during final flush: {e}");
+                        } else {
+                            self.frame_count += 1;
+                            flush_count += 1;
+                        }
                     }
                 }
             }

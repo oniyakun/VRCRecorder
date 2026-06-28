@@ -130,7 +130,7 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera, output_dir } => {
+                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera, vrchat_port, output_dir } => {
                     let old_preview = self.config.preview_enabled;
                     self.config.video_bitrate = bitrate;
                     self.config.mirror_video = mirror;
@@ -140,6 +140,7 @@ impl RenderState {
                     self.config.mic_enabled = mic_enabled;
                     self.config.mic_device = mic_device;
                     self.config.auto_stop_camera = auto_stop_camera;
+                    self.config.vrchat_port = vrchat_port;
                     self.config.output_dir = output_dir.clone();
                     // Keep pipeline's output dir in sync
                     self.recording_pipeline.set_output_dir(output_dir);
@@ -230,6 +231,15 @@ impl RenderState {
 
     fn start_recording(&mut self) {
         if self.recording { return; }
+        // Refuse to start without a live source — otherwise no frames are ever
+        // captured and the encoder is left half-initialized (see UXR1).
+        if self.spout_tex.is_none() {
+            let _ = self.event_tx.send(RenderEvent::Error {
+                message: "Connect a source before recording".into(),
+            });
+            log::warn!("Start recording ignored: no source connected");
+            return;
+        }
         // Auto-disable preview to save resources for recording
         if self.config.preview_enabled {
             self.config.preview_enabled = false;
@@ -273,11 +283,11 @@ impl RenderState {
 
     fn stop_recording(&mut self) {
         if !self.recording { return; }
-        let tex = self.spout_tex;
+        // Always finalize the encoder, even if there is no current texture —
+        // otherwise the pipeline is left half-initialized and recording wedges
+        // until restart (see UXR1).
         if let Some(gl) = self.gl.as_ref() {
-            if let Some(t) = tex {
-                let _ = self.recording_pipeline.stop(gl, t);
-            }
+            let _ = self.recording_pipeline.stop(gl, self.spout_tex);
         }
         self.recording = false;
         self.is_recording.store(false, Ordering::Relaxed);
@@ -348,11 +358,8 @@ impl RenderState {
 
                 // Stop recording if active
                 if self.recording {
-                    let tex = self.spout_tex;
                     if let Some(gl) = self.gl.as_ref() {
-                        if let Some(t) = tex {
-                            let _ = self.recording_pipeline.stop(gl, t);
-                        }
+                        let _ = self.recording_pipeline.stop(gl, self.spout_tex);
                     }
                     self.recording = false;
                     self.recording_start = None;
@@ -649,11 +656,8 @@ impl ApplicationHandler for RenderState {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let WindowEvent::CloseRequested = event {
             if self.recording {
-                let tex = self.spout_tex;
                 if let Some(gl) = self.gl.as_ref() {
-                    if let Some(t) = tex {
-                        let _ = self.recording_pipeline.stop(gl, t);
-                    }
+                    let _ = self.recording_pipeline.stop(gl, self.spout_tex);
                 }
             }
             if let Some(gl) = self.gl.as_ref() {

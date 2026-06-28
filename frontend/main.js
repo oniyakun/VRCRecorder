@@ -32,6 +32,16 @@
     function setToggle(id, on) { $(id).classList.toggle('active', on); }
     function toggleEl(id) { $(id).classList.toggle('active'); return $(id).classList.contains('active'); }
 
+    // Record button is only usable with a live source (or while already
+    // recording, so Stop is always reachable). See UXR1.
+    function updateRecordBtn() {
+        var btn = $('recordBtn');
+        if (!btn) return;
+        var usable = state.connected || state.recording;
+        btn.classList.toggle('disabled', !usable);
+        btn.title = usable ? '' : 'Connect a source before recording';
+    }
+
     // ---- Event dispatch (from polled events) ----
     function handleEvent(evt) {
         var d = evt.data || evt;
@@ -52,6 +62,7 @@
                 state.connected = true; state.senderName = d.name;
                 status('Connected: ' + d.name + ' ' + d.width + 'x' + d.height);
                 $('meta-resolution').textContent = d.width + 'x' + d.height;
+                updateRecordBtn();
                 break;
 
             case 'SenderDisconnected':
@@ -59,6 +70,7 @@
                 status('Not connected');
                 $('no-signal').style.display = 'block';
                 $('meta-resolution').textContent = '--';
+                updateRecordBtn();
                 break;
 
             case 'RecordingStarted':
@@ -66,6 +78,7 @@
                 $('recordBtn').classList.add('recording');
                 $('live-tag').style.color = '#FF3B30';
                 $('live-tag-text').textContent = 'REC 00:00:00';
+                updateRecordBtn();
                 playSound('sound/start.mp3');
                 break;
 
@@ -75,6 +88,7 @@
                 $('live-tag').style.color = '';
                 $('live-tag-text').textContent = 'PREVIEW MODE';
                 $('meta-elapsed').textContent = '00:00:00';
+                updateRecordBtn();
                 playSound('sound/stop.mp3');
                 break;
 
@@ -162,8 +176,9 @@
     // ---- Tauri Commands ----
     window.connectSender = function(name) { invoke('connect_sender', { name: name }).catch(function(e) { status('Connect error: ' + e); }); };
     window.toggleRecord = function() {
-        if (state.recording) invoke('stop_recording').catch(function(e) { status('Stop error: ' + e); });
-        else invoke('start_recording').catch(function(e) { status('Start error: ' + e); });
+        if (state.recording) { invoke('stop_recording').catch(function(e) { status('Stop error: ' + e); }); return; }
+        if (!state.connected) { status('Connect a source before recording'); return; }
+        invoke('start_recording').catch(function(e) { status('Start error: ' + e); });
     };
 
     // ---- UI Bindings ----
@@ -268,7 +283,14 @@
     });
     $('osc-send-port').addEventListener('change', function() {
         if (!state.config) return;
+        state.config.vrchat_port = this.value;
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+
+    $('bitrate-select').addEventListener('change', function() {
+        if (!state.config) return;
         state.config.video_bitrate = this.value;
+        $('meta-bitrate').textContent = this.value;
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
@@ -327,5 +349,6 @@
         status('Config load FAILED: ' + (e ? e.toString() : 'unknown'));
     });
 
+    updateRecordBtn();
     status('Init complete');
 })();

@@ -18,6 +18,7 @@ pub enum RenderCommand {
         mic_enabled: bool,
         mic_device: Option<String>,
         auto_stop_camera: bool,
+        vrchat_port: String,
         output_dir: PathBuf,
     },
     UpdateOrientation {

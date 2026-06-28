@@ -99,6 +99,7 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
     let mic_enabled = config.mic_enabled;
     let mic_device = config.mic_device.clone();
     let auto_stop_camera = config.auto_stop_camera;
+    let vrchat_port = config.vrchat_port.clone();
     let output_dir = config.output_dir.clone();
     let steamvr_auto_launch = config.steamvr_auto_launch;
 
@@ -122,6 +123,7 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         mic_enabled,
         mic_device,
         auto_stop_camera,
+        vrchat_port,
         output_dir,
     });
 
