@@ -39,6 +39,8 @@ pub struct AppConfig {
     pub steamvr_overlay: bool,
     #[serde(default = "default_steamvr_auto_launch")]
     pub steamvr_auto_launch: bool,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_video_bitrate() -> String {
@@ -109,6 +111,7 @@ impl Default for AppConfig {
             mic_device: None,
             steamvr_overlay: true,
             steamvr_auto_launch: false,
+            language: None,
         }
     }
 }

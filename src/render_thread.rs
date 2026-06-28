@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,11 +22,12 @@ use crate::spout::receiver::{list_senders, SpoutStream};
 
 /// Spawn the render thread with a hidden GL window.
 pub fn spawn(
-    mut config: AppConfig,
+    config: AppConfig,
     cmd_rx: mpsc::Receiver<RenderCommand>,
     event_tx: mpsc::Sender<RenderEvent>,
     preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     preview_dims: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+    preview_frame_seq: Arc<AtomicU64>,
     is_recording: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
@@ -36,7 +37,15 @@ pub fn spawn(
                 .with_any_thread(true)
                 .build()
                 .expect("Failed to create render event loop");
-            let mut state = RenderState::new(config, cmd_rx, event_tx, preview_buf, preview_dims, is_recording);
+            let mut state = RenderState::new(
+                config,
+                cmd_rx,
+                event_tx,
+                preview_buf,
+                preview_dims,
+                preview_frame_seq,
+                is_recording,
+            );
             let _ = event_loop.run_app(&mut state);
         })
         .expect("Failed to spawn render thread")
@@ -61,6 +70,7 @@ struct RenderState {
     preview_fbo: Option<glow::Framebuffer>,
     preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     preview_dims_shared: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+    preview_frame_seq: Arc<AtomicU64>,
     last_preview_mirror: bool,
     last_preview_portrait: bool,
     last_preview_vflip: bool,
@@ -89,6 +99,7 @@ impl RenderState {
         event_tx: mpsc::Sender<RenderEvent>,
         preview_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
         preview_dims_shared: std::sync::Arc<std::sync::Mutex<(u32, u32)>>,
+        preview_frame_seq: Arc<AtomicU64>,
         is_recording: Arc<AtomicBool>,
     ) -> Self {
         let output_dir = config.output_dir.clone();
@@ -105,6 +116,7 @@ impl RenderState {
             preview_fbo: None,
             preview_buf,
             preview_dims_shared,
+            preview_frame_seq,
             last_preview_mirror: false,
             last_preview_portrait: false,
             last_preview_vflip: false,
@@ -128,18 +140,11 @@ impl RenderState {
                 RenderCommand::DisconnectSender => self.disconnect_sender(),
                 RenderCommand::StartRecording => self.start_recording(),
                 RenderCommand::StopRecording => self.stop_recording(),
-                RenderCommand::UpdateConfig { bitrate, mirror, portrait, vflip, preview_enabled, mic_enabled, mic_device, auto_stop_camera, vrchat_port, output_dir } => {
+                RenderCommand::UpdateConfig(config) => {
                     let old_preview = self.config.preview_enabled;
-                    self.config.video_bitrate = bitrate;
-                    self.config.mirror_video = mirror;
-                    self.config.portrait_mode = portrait;
-                    self.config.video_vflip = vflip;
-                    self.config.preview_enabled = preview_enabled;
-                    self.config.mic_enabled = mic_enabled;
-                    self.config.mic_device = mic_device;
-                    self.config.auto_stop_camera = auto_stop_camera;
-                    self.config.vrchat_port = vrchat_port;
-                    self.config.output_dir = output_dir.clone();
+                    let preview_enabled = config.preview_enabled;
+                    let output_dir = config.output_dir.clone();
+                    self.config = config;
                     // Keep pipeline's output dir in sync
                     self.recording_pipeline.set_output_dir(output_dir);
                     // Toggle camera Spout output when preview changed and not recording
@@ -285,16 +290,24 @@ impl RenderState {
         // otherwise the pipeline is left half-initialized and recording wedges
         // until restart (see UXR1).
         let elapsed = self.recording_start.map(|s| s.elapsed().as_secs_f64());
-        if let Some(gl) = self.gl.as_ref() {
-            let _ = self.recording_pipeline.stop(gl, self.spout_tex, elapsed);
-        }
+        let final_path = if let Some(gl) = self.gl.as_ref() {
+            match self.recording_pipeline.stop(gl, self.spout_tex, elapsed) {
+                Ok(p) => Some(p.to_string_lossy().into_owned()),
+                Err(e) => {
+                    log::error!("Failed to stop recording: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         self.recording = false;
         self.is_recording.store(false, Ordering::Relaxed);
         self.recording_start = None;
         self.send_camera_stop_osc();
-        let _ = self.event_tx.send(RenderEvent::RecordingStopped {
-            final_path: None,
-        });
+        let _ = self
+            .event_tx
+            .send(RenderEvent::RecordingStopped { final_path });
         log::info!("Recording stopped");
     }
 
@@ -517,6 +530,9 @@ impl RenderState {
             let mut dims = self.preview_dims_shared.lock().unwrap();
             *dims = (out_w, out_h);
         }
+        // Bump frame sequence so the MJPEG server detects the new frame
+        // even when consecutive JPEGs compress to the same length.
+        self.preview_frame_seq.fetch_add(1, Ordering::Relaxed);
 
         self.last_preview_sent = Some(now);
     }

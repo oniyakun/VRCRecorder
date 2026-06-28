@@ -11,18 +11,19 @@
 mod ffi;
 mod texture;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
-use std::path::PathBuf;
 
 use crate::channels::RenderCommand;
 use crate::config::AppConfig;
 
 use ffi::{
-    get_interface, launch_steamvr, load_openvr, InputDigitalActionData, VRActiveActionSet, VREvent,
-    VREVENT_DASHBOARD_ACTIVATED, VREVENT_QUIT, VR_APPLICATION_OVERLAY,
-    IVRAPPLICATIONS_VERSION, IVROVERLAY_VERSION, IVRINPUT_VERSION,
+    IVRAPPLICATIONS_VERSION, IVRINPUT_VERSION, IVROVERLAY_VERSION, InputDigitalActionData,
+    VR_APPLICATION_OVERLAY, VRActiveActionSet, VREVENT_DASHBOARD_ACTIVATED, VREVENT_QUIT, VREvent,
+    get_interface, launch_steamvr, load_openvr,
 };
 
 const APP_KEY: &str = "com.vrc-recorder.overlay";
@@ -39,16 +40,29 @@ pub fn spawn_overlay(
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
     auto_launch: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
+    language: Arc<Mutex<Option<String>>>,
 ) {
-    if !config.steamvr_overlay {
-        log::info!("SteamVR overlay disabled in config");
-        return;
-    }
+    enabled.store(config.steamvr_overlay, Ordering::Relaxed);
 
     std::thread::Builder::new()
         .name("steamvr-overlay".into())
         .spawn(move || {
-            overlay_main(cmd_tx, is_recording, auto_launch);
+            loop {
+                if !enabled.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+
+                overlay_main(
+                    cmd_tx.clone(),
+                    is_recording.clone(),
+                    auto_launch.clone(),
+                    enabled.clone(),
+                    language.clone(),
+                );
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         })
         .expect("Failed to spawn SteamVR overlay thread");
 }
@@ -57,9 +71,15 @@ fn overlay_main(
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
     auto_launch: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
+    language: Arc<Mutex<Option<String>>>,
 ) {
     // ---- Step 1: Load DLL (retry until SteamVR is available) ----
     let dll = loop {
+        if !enabled.load(Ordering::Relaxed) {
+            log::info!("SteamVR overlay disabled before DLL load");
+            return;
+        }
         match load_openvr() {
             Ok(dll) => break dll,
             Err(e) => {
@@ -76,6 +96,10 @@ fn overlay_main(
     // auto-launch, start it once via vrstartup.exe and keep retrying until it comes up.
     let mut launch_attempted = false;
     loop {
+        if !enabled.load(Ordering::Relaxed) {
+            log::info!("SteamVR overlay disabled before VR init");
+            return;
+        }
         // Small delay to let SteamVR fully initialize (OyasumiVR does this)
         std::thread::sleep(std::time::Duration::from_secs(1));
         unsafe {
@@ -90,7 +114,9 @@ fn overlay_main(
                         Err(e) => log::warn!("SteamVR overlay: auto-launch failed: {e}"),
                     }
                 }
-                log::info!("SteamVR overlay: VR_InitInternal failed (error={error}) — retrying in 3s");
+                log::info!(
+                    "SteamVR overlay: VR_InitInternal failed (error={error}) — retrying in 3s"
+                );
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -108,7 +134,9 @@ fn overlay_main(
         }
         Err(e) => {
             log::error!("SteamVR overlay: get IVROverlay failed: {e}");
-            unsafe { (dll.vr_shutdown)(); }
+            unsafe {
+                (dll.vr_shutdown)();
+            }
             return;
         }
     };
@@ -121,7 +149,9 @@ fn overlay_main(
         }
         Err(e) => {
             log::error!("SteamVR overlay: get IVRApplications failed: {e}");
-            unsafe { (dll.vr_shutdown)(); }
+            unsafe {
+                (dll.vr_shutdown)();
+            }
             return;
         }
     };
@@ -134,7 +164,9 @@ fn overlay_main(
         }
         Err(e) => {
             log::error!("SteamVR overlay: get IVRInput failed: {e}");
-            unsafe { (dll.vr_shutdown)(); }
+            unsafe {
+                (dll.vr_shutdown)();
+            }
             return;
         }
     };
@@ -154,22 +186,37 @@ fn overlay_main(
     if let Err(e) = write_manifest(&manifest_path, &action_manifest_path) {
         log::error!("SteamVR overlay: failed to write manifest.vrmanifest: {e}");
     }
-    log::info!("SteamVR overlay: step 4 done, manifest at {}", manifest_path.display());
+    log::info!(
+        "SteamVR overlay: step 4 done, manifest at {}",
+        manifest_path.display()
+    );
 
     if let Err(e) = std::fs::write(&action_manifest_path, include_str!("action_manifest.json")) {
         log::error!("SteamVR overlay: failed to write action_manifest.json: {e}");
     }
     for (name, contents) in [
-        ("bindings_knuckles.json", include_str!("bindings_knuckles.json")),
-        ("bindings_oculus_touch.json", include_str!("bindings_oculus_touch.json")),
-        ("bindings_vive_controller.json", include_str!("bindings_vive_controller.json")),
+        (
+            "bindings_knuckles.json",
+            include_str!("bindings_knuckles.json"),
+        ),
+        (
+            "bindings_oculus_touch.json",
+            include_str!("bindings_oculus_touch.json"),
+        ),
+        (
+            "bindings_vive_controller.json",
+            include_str!("bindings_vive_controller.json"),
+        ),
     ] {
         if let Err(e) = std::fs::write(cache_dir.join(name), contents) {
             log::error!("SteamVR overlay: failed to write {name}: {e}");
         }
     }
     let tex_path = cache_dir.join("steamvr_overlay.png");
-    log::info!("SteamVR overlay: step 4 done, action manifest at {}", action_manifest_path.display());
+    log::info!(
+        "SteamVR overlay: step 4 done, action manifest at {}",
+        action_manifest_path.display()
+    );
 
     // ---- Step 5: Register application manifest ----
     log::info!("SteamVR overlay: step 5 - registering application manifest...");
@@ -178,7 +225,8 @@ fn overlay_main(
 
     // ---- Step 6: Set SteamVR Input action manifest ----
     log::info!("SteamVR overlay: step 6 - setting action manifest...");
-    let action_manifest_cstr = std::ffi::CString::new(action_manifest_path.to_string_lossy().as_bytes()).unwrap();
+    let action_manifest_cstr =
+        std::ffi::CString::new(action_manifest_path.to_string_lossy().as_bytes()).unwrap();
     unsafe {
         let err = input.set_action_manifest_path(action_manifest_cstr.as_ptr() as *const u8);
         if err != 0 {
@@ -195,10 +243,15 @@ fn overlay_main(
     let mut action_set_handle: u64 = 0;
     unsafe {
         log::info!("SteamVR overlay: step 7a - GetActionSetHandle...");
-        let err = input.get_action_set_handle(action_set_cstr.as_ptr() as *const u8, &mut action_set_handle);
+        let err = input.get_action_set_handle(
+            action_set_cstr.as_ptr() as *const u8,
+            &mut action_set_handle,
+        );
         if err != 0 {
             log::error!("SteamVR overlay: GetActionSetHandle failed (error={err})");
-            unsafe { (dll.vr_shutdown)(); }
+            unsafe {
+                (dll.vr_shutdown)();
+            }
             return;
         }
         log::info!("SteamVR overlay: action set handle={action_set_handle}");
@@ -211,7 +264,9 @@ fn overlay_main(
         let err = input.get_action_handle(action_cstr.as_ptr() as *const u8, &mut toggle_action);
         if err != 0 {
             log::error!("SteamVR overlay: GetActionHandle failed (error={err})");
-            unsafe { (dll.vr_shutdown)(); }
+            unsafe {
+                (dll.vr_shutdown)();
+            }
             return;
         }
         log::info!("SteamVR overlay: action handle={toggle_action}");
@@ -233,14 +288,20 @@ fn overlay_main(
             &mut main_handle,
             &mut thumb_handle,
         );
-        log::info!("SteamVR overlay: CreateDashboardOverlay returned err={err}, main={main_handle}, thumb={thumb_handle}");
+        log::info!(
+            "SteamVR overlay: CreateDashboardOverlay returned err={err}, main={main_handle}, thumb={thumb_handle}"
+        );
 
         // Configure overlay (following AdvancedSettings pattern)
         if main_handle != 0 {
             log::info!("SteamVR overlay: step 8b - configuring overlay (width, input, flags)...");
             overlay.set_overlay_width_in_meters(main_handle, 2.5);
             overlay.set_overlay_input_method(main_handle, VROVERLAY_INPUT_METHOD_MOUSE);
-            overlay.set_overlay_flag(main_handle, VROVERLAY_FLAGS_SEND_VR_SMOOTH_SCROLL_EVENTS, true);
+            overlay.set_overlay_flag(
+                main_handle,
+                VROVERLAY_FLAGS_SEND_VR_SMOOTH_SCROLL_EVENTS,
+                true,
+            );
             log::info!("SteamVR overlay: overlay configured");
         }
     }
@@ -248,7 +309,12 @@ fn overlay_main(
 
     // ---- Step 9: Generate and set initial texture ----
     log::info!("SteamVR overlay: step 9 - setting texture...");
-    let initial_tex = texture::generate(false);
+    let initial_lang = language
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
+    let initial_tex = texture::generate(false, &initial_lang);
     if std::fs::write(&tex_path, &initial_tex).is_ok() {
         let tex_cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
         let tex_ptr = tex_cstr.as_ptr() as *const u8;
@@ -279,9 +345,21 @@ fn overlay_main(
         n_priority: 0,
     };
     let mut was_recording = is_recording.load(Ordering::Relaxed);
+    let mut was_lang = language
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(11));
+        if !enabled.load(Ordering::Relaxed) {
+            log::info!("SteamVR overlay disabled — shutting down");
+            unsafe {
+                (dll.vr_shutdown)();
+            }
+            return;
+        }
 
         // Poll overlay events
         if main_handle != 0 {
@@ -295,7 +373,9 @@ fn overlay_main(
                     match event.event_type {
                         VREVENT_QUIT => {
                             log::info!("SteamVR overlay: VREvent_Quit — shutting down");
-                            unsafe { (dll.vr_shutdown)(); }
+                            unsafe {
+                                (dll.vr_shutdown)();
+                            }
                             return;
                         }
                         VREVENT_DASHBOARD_ACTIVATED => {
@@ -342,11 +422,17 @@ fn overlay_main(
             }
         }
 
-        // Update texture when recording state changes
+        // Update texture when recording state or language changes
         let now_recording = is_recording.load(Ordering::Relaxed);
-        if now_recording != was_recording {
+        let now_lang = language
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "en".to_string());
+        if now_recording != was_recording || now_lang != was_lang {
             was_recording = now_recording;
-            let tex = texture::generate(now_recording);
+            was_lang = now_lang.clone();
+            let tex = texture::generate(now_recording, &now_lang);
             if std::fs::write(&tex_path, &tex).is_ok() {
                 let cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
                 let ptr = cstr.as_ptr() as *const u8;
@@ -367,14 +453,17 @@ fn overlay_main(
     }
 
     log::info!("SteamVR overlay: main loop exited");
-    unsafe { (dll.vr_shutdown)(); }
+    unsafe {
+        (dll.vr_shutdown)();
+    }
 }
 
-fn write_manifest(manifest_path: &std::path::Path, action_manifest_path: &std::path::Path) -> std::io::Result<()> {
+fn write_manifest(
+    manifest_path: &std::path::Path,
+    action_manifest_path: &std::path::Path,
+) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
-    let working_dir = exe
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let working_dir = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
     let json = format!(
         r#"{{
     "source": "builtin",
@@ -408,7 +497,10 @@ fn json_path(path: &std::path::Path) -> String {
 }
 
 /// Register the SteamVR application manifest through IVRApplications.
-fn register_application_manifest(applications: &ffi::VRApplications, manifest_path: &std::path::Path) {
+fn register_application_manifest(
+    applications: &ffi::VRApplications,
+    manifest_path: &std::path::Path,
+) {
     let app_key = std::ffi::CString::new(APP_KEY).unwrap();
     let manifest = std::ffi::CString::new(manifest_path.to_string_lossy().as_bytes()).unwrap();
 
@@ -472,7 +564,8 @@ fn register_in_appconfig(manifest_path: &std::path::Path) {
             // Look for the closing ] of manifest_paths
             if let Some(paths_end) = content.rfind(']') {
                 let mut new_content = content[..paths_end].to_string();
-                if !new_content.trim_end().ends_with('[') && !new_content.trim_end().ends_with(',') {
+                if !new_content.trim_end().ends_with('[') && !new_content.trim_end().ends_with(',')
+                {
                     new_content.push(',');
                 }
                 new_content.push_str(&format!("\n        \"{}\"", manifest_str));
@@ -481,7 +574,9 @@ fn register_in_appconfig(manifest_path: &std::path::Path) {
                 if let Err(e) = std::fs::write(&steam_config, &new_content) {
                     log::warn!("SteamVR overlay: failed to write appconfig.json: {e}");
                 } else {
-                    log::info!("SteamVR overlay: manifest added to appconfig.json. Restart SteamVR to apply.");
+                    log::info!(
+                        "SteamVR overlay: manifest added to appconfig.json. Restart SteamVR to apply."
+                    );
                 }
             } else {
                 log::warn!("SteamVR overlay: could not parse appconfig.json structure");

@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-
 use serde::Serialize;
+
+use crate::config::AppConfig;
 
 /// Commands sent from Tauri frontend to the render thread.
 #[derive(Debug)]
@@ -9,21 +9,8 @@ pub enum RenderCommand {
     DisconnectSender,
     StartRecording,
     StopRecording,
-    UpdateConfig {
-        bitrate: String,
-        mirror: bool,
-        portrait: bool,
-        vflip: bool,
-        preview_enabled: bool,
-        mic_enabled: bool,
-        mic_device: Option<String>,
-        auto_stop_camera: bool,
-        vrchat_port: String,
-        output_dir: PathBuf,
-    },
-    UpdateOrientation {
-        is_landscape: bool,
-    },
+    UpdateConfig(AppConfig),
+    UpdateOrientation { is_landscape: bool },
     Shutdown,
 }
 

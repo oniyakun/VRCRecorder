@@ -1,6 +1,6 @@
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use rosc::{OscMessage, OscPacket, OscType};
@@ -12,8 +12,7 @@ pub fn send_osc(port: u16, address: &str, value: &OscType) -> Result<(), String>
         args: vec![value.clone()],
     });
 
-    let data =
-        rosc::encoder::encode(&msg).map_err(|e| format!("OSC encode failed: {e}"))?;
+    let data = rosc::encoder::encode(&msg).map_err(|e| format!("OSC encode failed: {e}"))?;
 
     let addr = format!("127.0.0.1:{port}");
     log::info!("OSC send → {addr}  [{address}]  {value:?}");

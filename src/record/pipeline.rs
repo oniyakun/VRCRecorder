@@ -128,7 +128,7 @@ impl RecordingPipeline {
         gl: &glow::Context,
         spout_tex: Option<glow::Texture>,
         wall_elapsed_secs: Option<f64>,
-    ) -> Result<(), String> {
+    ) -> Result<PathBuf, String> {
         // Let the last audio callbacks land, then stop the streams and finalize
         // the temp PCM files (the writer threads flush + close on stop()).
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -207,8 +207,14 @@ impl RecordingPipeline {
         self.audio_capture = None;
         self.mic_capture = None;
 
+        // Compute the expected final output path now so we can return it to the
+        // frontend immediately. The background thread merges into the same path.
+        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let final_output_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
+
         // Finish ffmpeg encoding + merge audio on background thread.
         if let Some(mut enc) = encoder {
+            let final_path_for_thread = final_output_path.clone();
             std::thread::Builder::new()
                 .name("encoder-finish".into())
                 .spawn(move || {
@@ -228,8 +234,7 @@ impl RecordingPipeline {
                                 return;
                             }
                         };
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-                        let final_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
+                        let final_path = final_path_for_thread;
 
                         // Re-time the 60fps-encoded video to the measured capture
                         // rate so file duration matches wall-clock and audio stays
@@ -262,7 +267,7 @@ impl RecordingPipeline {
                 .map_err(|e| format!("Failed to spawn finish thread: {e}"))?;
         }
 
-        Ok(())
+        Ok(final_output_path)
     }
 
     pub fn process_frame(&mut self, gl: &glow::Context, spout_tex: glow::Texture) {

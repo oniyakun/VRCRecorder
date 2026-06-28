@@ -11,7 +11,7 @@ mod render_thread;
 mod spout;
 mod steamvr;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +34,8 @@ pub struct AppState {
     /// Whether to auto-launch SteamVR if not running. Shared live with the
     /// SteamVR overlay thread so toggling it in the UI takes effect immediately.
     pub steamvr_auto_launch: Arc<AtomicBool>,
+    pub steamvr_overlay_enabled: Arc<AtomicBool>,
+    pub language: Arc<Mutex<Option<String>>>,
 }
 
 // ===== Tauri Commands =====
@@ -91,16 +93,7 @@ fn get_config(state: tauri::State<AppState>) -> Result<AppConfig, String> {
 
 #[tauri::command]
 fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(), String> {
-    let bitrate = config.video_bitrate.clone();
-    let mirror = config.mirror_video;
-    let portrait = config.portrait_mode;
-    let vflip = config.video_vflip;
-    let preview_enabled = config.preview_enabled;
-    let mic_enabled = config.mic_enabled;
-    let mic_device = config.mic_device.clone();
-    let auto_stop_camera = config.auto_stop_camera;
-    let vrchat_port = config.vrchat_port.clone();
-    let output_dir = config.output_dir.clone();
+    let render_config = config.clone();
     let steamvr_auto_launch = config.steamvr_auto_launch;
 
     {
@@ -114,18 +107,22 @@ fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(),
         .steamvr_auto_launch
         .store(steamvr_auto_launch, Ordering::Relaxed);
 
-    let _ = state.cmd_tx.lock().unwrap().send(RenderCommand::UpdateConfig {
-        bitrate,
-        mirror,
-        portrait,
-        vflip,
-        preview_enabled,
-        mic_enabled,
-        mic_device,
-        auto_stop_camera,
-        vrchat_port,
-        output_dir,
-    });
+    state
+        .steamvr_overlay_enabled
+        .store(render_config.steamvr_overlay, Ordering::Relaxed);
+
+    {
+        let mut lang = state.language.lock().unwrap();
+        *lang = render_config.language.clone();
+    }
+
+    sync_osc(&state);
+
+    let _ = state
+        .cmd_tx
+        .lock()
+        .unwrap()
+        .send(RenderCommand::UpdateConfig(render_config));
 
     Ok(())
 }
@@ -185,20 +182,17 @@ fn sync_osc(state: &AppState) {
 
     if enabled {
         let cmd_tx = state.cmd_tx.lock().unwrap().clone();
-        match OscReceiver::start(
-            port.parse().unwrap_or(9001),
-            move |msg| {
-                if msg.address == "/usercamera/OrientationIsLandscape" {
-                    let _ = cmd_tx.send(RenderCommand::UpdateOrientation {
-                        is_landscape: match msg.value {
-                            osc::OscValue::Int(v) => v != 0,
-                            osc::OscValue::Bool(v) => v,
-                            osc::OscValue::Float(v) => v > 0.5,
-                        },
-                    });
-                }
-            },
-        ) {
+        match OscReceiver::start(port.parse().unwrap_or(9001), move |msg| {
+            if msg.address == "/usercamera/OrientationIsLandscape" {
+                let _ = cmd_tx.send(RenderCommand::UpdateOrientation {
+                    is_landscape: match msg.value {
+                        osc::OscValue::Int(v) => v != 0,
+                        osc::OscValue::Bool(v) => v,
+                        osc::OscValue::Float(v) => v > 0.5,
+                    },
+                });
+            }
+        }) {
             Ok(receiver) => {
                 log::info!("OSC receiver started on port {port}");
                 *osc = Some(receiver);
@@ -219,21 +213,21 @@ fn main() {
         .join("vrc-recorder");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("vrc-recorder.log");
-    let log_file = std::fs::File::create(&log_path)
-        .expect("Failed to create log file");
+    let log_file = std::fs::File::create(&log_path).expect("Failed to create log file");
 
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Pipe(Box::new(log_file)))
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .init();
 
     // Log panics
     let log_path_clone = log_path.clone();
     std::panic::set_hook(Box::new(move |info| {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log_path_clone) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path_clone)
+        {
             let _ = writeln!(f, "PANIC: {info}");
         }
     }));
@@ -256,10 +250,15 @@ fn main() {
     // Shared preview buffer (render thread writes, protocol handler reads)
     let preview_buf = Arc::new(Mutex::new(Vec::new()));
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
+    let preview_frame_seq = Arc::new(AtomicU64::new(0));
+    let steamvr_overlay_enabled = Arc::new(AtomicBool::new(config.steamvr_overlay));
+    let language = Arc::new(Mutex::new(config.language.clone()));
 
     // Clone before moving into render thread / setup closure
     let is_recording_for_overlay = is_recording.clone();
     let auto_launch_for_overlay = steamvr_auto_launch.clone();
+    let steamvr_overlay_enabled_for_overlay = steamvr_overlay_enabled.clone();
+    let language_for_overlay = language.clone();
 
     let render_config = config.clone();
     render_thread::spawn(
@@ -268,12 +267,14 @@ fn main() {
         event_tx,
         preview_buf.clone(),
         preview_dims.clone(),
+        preview_frame_seq.clone(),
         is_recording.clone(),
     );
 
     // Start MJPEG streaming server
     let mjpeg_port = mjpeg_server::start(mjpeg_server::MjpegState {
         jpeg_data: preview_buf.clone(),
+        frame_seq: preview_frame_seq,
     });
 
     let app_state = AppState {
@@ -285,6 +286,8 @@ fn main() {
         preview_dims,
         mjpeg_port,
         steamvr_auto_launch,
+        steamvr_overlay_enabled,
+        language: language.clone(),
     };
 
     tauri::Builder::default()
@@ -296,9 +299,22 @@ fn main() {
             let (icon_w, icon_h) = logo_rgba.dimensions();
             let icon = tauri::image::Image::new_owned(logo_rgba.into_raw(), icon_w, icon_h);
 
-            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)
+            let (show_text, quit_text) = match app
+                .state::<AppState>()
+                .config
+                .lock()
+                .unwrap()
+                .language
+                .as_deref()
+            {
+                Some("zh-CN") => ("显示", "退出"),
+                Some("ja") => ("表示", "終了"),
+                _ => ("Show", "Quit"),
+            };
+
+            let show_item = MenuItem::with_id(app, "show", show_text, true, None::<&str>)
                 .expect("Failed to create Show menu item");
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+            let quit_item = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)
                 .expect("Failed to create Quit menu item");
             let menu = MenuBuilder::new(app)
                 .item(&show_item)
@@ -309,19 +325,17 @@ fn main() {
             TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click {
@@ -348,6 +362,8 @@ fn main() {
                 overlay_cmd_tx,
                 is_recording_for_overlay.clone(),
                 auto_launch_for_overlay.clone(),
+                steamvr_overlay_enabled_for_overlay.clone(),
+                language_for_overlay.clone(),
             );
 
             Ok(())

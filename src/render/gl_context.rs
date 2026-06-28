@@ -53,12 +53,11 @@ impl GlState {
         };
 
         // Create surface first
-        let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new()
-            .build(
-                window_handle,
-                NonZeroU32::new(w).unwrap(),
-                NonZeroU32::new(h).unwrap(),
-            );
+        let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
+            window_handle,
+            NonZeroU32::new(w).unwrap(),
+            NonZeroU32::new(h).unwrap(),
+        );
 
         let surface = unsafe {
             display
@@ -111,7 +110,8 @@ impl GlState {
             self.surface.resize(&self.context, w, h);
             unsafe {
                 use glow::HasContext as _;
-                self.gl.viewport(0, 0, new_size.width as i32, new_size.height as i32);
+                self.gl
+                    .viewport(0, 0, new_size.width as i32, new_size.height as i32);
             }
         }
     }

@@ -192,11 +192,7 @@ void main() {
 }
 "#;
 
-unsafe fn compile_shader(
-    gl: &glow::Context,
-    shader_type: u32,
-    source: &str,
-) -> glow::Shader {
+unsafe fn compile_shader(gl: &glow::Context, shader_type: u32, source: &str) -> glow::Shader {
     let shader = gl.create_shader(shader_type).unwrap();
     gl.shader_source(shader, source);
     gl.compile_shader(shader);
@@ -208,11 +204,7 @@ unsafe fn compile_shader(
     shader
 }
 
-unsafe fn link_program(
-    gl: &glow::Context,
-    vs: glow::Shader,
-    fs: glow::Shader,
-) -> glow::Program {
+unsafe fn link_program(gl: &glow::Context, vs: glow::Shader, fs: glow::Shader) -> glow::Program {
     let program = gl.create_program().unwrap();
     gl.attach_shader(program, vs);
     gl.attach_shader(program, fs);

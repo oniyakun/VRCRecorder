@@ -13,7 +13,10 @@ const FFMPEG_DLLS: &[(&str, &[u8])] = &[
     ("avfilter-10.dll", include_bytes!(env!("FFMPEG_AVFILTER"))),
     ("avformat-61.dll", include_bytes!(env!("FFMPEG_AVFORMAT"))),
     ("avutil-59.dll", include_bytes!(env!("FFMPEG_AVUTIL"))),
-    ("swresample-5.dll", include_bytes!(env!("FFMPEG_SWRESAMPLE"))),
+    (
+        "swresample-5.dll",
+        include_bytes!(env!("FFMPEG_SWRESAMPLE")),
+    ),
     ("swscale-8.dll", include_bytes!(env!("FFMPEG_SWSCALE"))),
 ];
 
