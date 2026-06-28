@@ -80,7 +80,6 @@ struct RenderState {
 
     // Periodic emit
     last_elapsed_emit: Option<Instant>,
-    last_mic_check: Option<Instant>,
 }
 
 impl RenderState {
@@ -117,7 +116,6 @@ impl RenderState {
             last_sender_scan: None,
             last_sender_list: Vec::new(),
             last_elapsed_emit: None,
-            last_mic_check: None,
         }
     }
 
@@ -286,8 +284,9 @@ impl RenderState {
         // Always finalize the encoder, even if there is no current texture —
         // otherwise the pipeline is left half-initialized and recording wedges
         // until restart (see UXR1).
+        let elapsed = self.recording_start.map(|s| s.elapsed().as_secs_f64());
         if let Some(gl) = self.gl.as_ref() {
-            let _ = self.recording_pipeline.stop(gl, self.spout_tex);
+            let _ = self.recording_pipeline.stop(gl, self.spout_tex, elapsed);
         }
         self.recording = false;
         self.is_recording.store(false, Ordering::Relaxed);
@@ -354,22 +353,37 @@ impl RenderState {
             let new_dims = (info.width, info.height);
             if self.spout_tex_dims.is_some() && self.spout_tex_dims != Some(new_dims) {
                 let (old_w, old_h) = self.spout_tex_dims.unwrap();
-                log::info!("Spout resolution changed: {old_w}x{old_h} -> {}x{}", new_dims.0, new_dims.1);
+                let (new_w, new_h) = new_dims;
+                log::info!("Spout resolution changed: {old_w}x{old_h} -> {new_w}x{new_h}");
 
-                // Stop recording if active
+                // Stop recording if active. Finalization runs on the background
+                // thread and now survives because we no longer relaunch the
+                // process (see P9).
                 if self.recording {
-                    if let Some(gl) = self.gl.as_ref() {
-                        let _ = self.recording_pipeline.stop(gl, self.spout_tex);
-                    }
+                    let elapsed = self.recording_start.map(|s| s.elapsed().as_secs_f64());
+                    let _ = self.recording_pipeline.stop(&gl_arc, self.spout_tex, elapsed);
                     self.recording = false;
+                    self.is_recording.store(false, Ordering::Relaxed);
                     self.recording_start = None;
                 }
 
+                // Recreate the GL texture at the new size in place — no full
+                // process relaunch (P9). Preview rebuilds itself at the new size.
+                {
+                    let gl: &glow::Context = &gl_arc;
+                    if let Some(old) = self.spout_tex.take() {
+                        unsafe { gl.delete_texture(old); }
+                    }
+                    if let Some(old) = self.preview_renderer.take() {
+                        old.destroy(gl);
+                    }
+                    self.spout_tex = Some(texture::create_input_texture(gl, new_w, new_h));
+                }
+                self.spout_tex_dims = Some(new_dims);
+
                 self.config.save();
                 let _ = self.event_tx.send(RenderEvent::ResolutionChanged {
-                    old_w, old_h,
-                    new_w: new_dims.0,
-                    new_h: new_dims.1,
+                    old_w, old_h, new_w, new_h,
                 });
                 return false;
             }
@@ -516,19 +530,8 @@ impl RenderState {
         if let Some(ref tex) = self.spout_tex {
             self.recording_pipeline.process_frame(gl, *tex);
         }
-
-        // Periodic mic device change check (every 2s)
-        let now = Instant::now();
-        if self.config.mic_enabled {
-            if let Some(last) = self.last_mic_check {
-                if (now - last).as_secs() >= 2 {
-                    self.recording_pipeline.check_mic_device();
-                    self.last_mic_check = Some(now);
-                }
-            } else {
-                self.last_mic_check = Some(now);
-            }
-        }
+        // The selected microphone is honored for the whole recording — there is
+        // no mid-recording device re-check that could switch to the default (C3).
     }
 
     fn scan_senders(&mut self) {
@@ -656,8 +659,9 @@ impl ApplicationHandler for RenderState {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let WindowEvent::CloseRequested = event {
             if self.recording {
+                let elapsed = self.recording_start.map(|s| s.elapsed().as_secs_f64());
                 if let Some(gl) = self.gl.as_ref() {
-                    let _ = self.recording_pipeline.stop(gl, self.spout_tex);
+                    let _ = self.recording_pipeline.stop(gl, self.spout_tex, elapsed);
                 }
             }
             if let Some(gl) = self.gl.as_ref() {

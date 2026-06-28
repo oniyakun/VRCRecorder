@@ -80,7 +80,12 @@ impl RecordingPipeline {
 
         let pbo = PboReader::new(gl, width, height);
 
-        let audio = match AudioCapture::start() {
+        // Audio PCM is streamed to temp files alongside the intermediate video,
+        // not buffered in RAM (see P2). Paths derive from the video path.
+        let sys_pcm_path = video_path.with_extension("sys.pcm");
+        let mic_pcm_path = video_path.with_extension("mic.pcm");
+
+        let audio = match AudioCapture::start(sys_pcm_path) {
             Ok(a) => {
                 log::info!("System audio capture started");
                 Some(a)
@@ -92,7 +97,7 @@ impl RecordingPipeline {
         };
 
         let mic = if mic_enabled {
-            match MicCapture::start(mic_device) {
+            match MicCapture::start(mic_device, mic_pcm_path) {
                 Ok(m) => {
                     log::info!("Mic capture started: {}", m.device_name());
                     Some(m)
@@ -118,28 +123,35 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    pub fn stop(&mut self, gl: &glow::Context, spout_tex: Option<glow::Texture>) -> Result<(), String> {
-        // Stop audio capture first, then drain remaining data
+    pub fn stop(
+        &mut self,
+        gl: &glow::Context,
+        spout_tex: Option<glow::Texture>,
+        wall_elapsed_secs: Option<f64>,
+    ) -> Result<(), String> {
+        // Let the last audio callbacks land, then stop the streams and finalize
+        // the temp PCM files (the writer threads flush + close on stop()).
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         let audio_data = if let Some(ref mut audio) = self.audio_capture {
-            audio.stop();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let remaining = audio.drain();
-            log::info!("System audio captured: {} bytes", remaining.len());
-            Some((remaining, audio.sample_rate(), audio.channels()))
+            let bytes = audio.stop();
+            log::info!("System audio captured: {bytes} bytes");
+            if bytes > 0 {
+                Some((audio.pcm_path().clone(), audio.sample_rate(), audio.channels()))
+            } else {
+                None
+            }
         } else {
             None
         };
 
-        // Stop and drain mic capture
         let mic_data = if let Some(ref mut mic) = self.mic_capture {
-            mic.stop();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let remaining = mic.drain();
-            log::info!("Mic audio captured: {} bytes", remaining.len());
-            if remaining.is_empty() {
-                None
+            let bytes = mic.stop();
+            log::info!("Mic audio captured: {bytes} bytes");
+            if bytes > 0 {
+                Some((mic.pcm_path().clone(), mic.sample_rate(), mic.channels()))
             } else {
-                Some((remaining, mic.sample_rate(), mic.channels()))
+                None
             }
         } else {
             None
@@ -193,6 +205,7 @@ impl RecordingPipeline {
         self.frame_count = 0;
         self.dropped_frames = 0;
         self.audio_capture = None;
+        self.mic_capture = None;
 
         // Finish ffmpeg encoding + merge audio on background thread.
         if let Some(mut enc) = encoder {
@@ -218,7 +231,11 @@ impl RecordingPipeline {
                         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
                         let final_path = output_dir.join(format!("VRCRecorder_{timestamp}.mp4"));
 
-                        let video_duration = frame_count as f64 / 60.0;
+                        // Re-time the 60fps-encoded video to the measured capture
+                        // rate so file duration matches wall-clock and audio stays
+                        // in sync regardless of the real Spout delivery rate (P1).
+                        let (itsscale, video_duration) =
+                            retime_factor(frame_count, wall_elapsed_secs);
                         match merge_audio_video(
                             &ffmpeg_path,
                             vp,
@@ -226,6 +243,7 @@ impl RecordingPipeline {
                             mic_data,
                             &final_path,
                             video_duration,
+                            itsscale,
                         ) {
                             Ok(()) => {
                                 let _ = std::fs::remove_file(vp);
@@ -247,22 +265,6 @@ impl RecordingPipeline {
         Ok(())
     }
 
-    pub fn check_mic_device(&mut self) {
-        if let Some(ref mic) = self.mic_capture {
-            if mic.device_changed() {
-                log::info!("Mic device changed, restarting capture...");
-                let _ = self.mic_capture.take();
-                match MicCapture::start(None) {
-                    Ok(m) => {
-                        log::info!("Mic capture restarted: {}", m.device_name());
-                        self.mic_capture = Some(m);
-                    }
-                    Err(e) => log::warn!("Mic restart failed: {e}"),
-                }
-            }
-        }
-    }
-
     pub fn process_frame(&mut self, gl: &glow::Context, spout_tex: glow::Texture) {
         let (pbo, encoder) = match (&mut self.pbo_reader, &mut self.encoder) {
             (Some(pbo), Some(enc)) => (pbo, enc),
@@ -276,19 +278,6 @@ impl RecordingPipeline {
                     self.frame_count += 1;
                     if self.frame_count % 120 == 0 {
                         log::info!("{} frames captured ({} dropped)", self.frame_count, self.dropped_frames);
-                        if let Some(ref audio) = self.audio_capture {
-                            let buf_size = audio.buffer_size();
-                            if buf_size > 0 {
-                                log::info!(
-                                    "Audio buffer: {} bytes (~{:.1}s)",
-                                    buf_size,
-                                    buf_size as f64
-                                        / (audio.sample_rate() as f64
-                                            * audio.channels() as f64
-                                            * 2.0)
-                                );
-                            }
-                        }
                     }
                 }
                 Ok(false) => {
@@ -352,21 +341,45 @@ fn find_ffmpeg() -> Result<PathBuf, String> {
     Err("ffmpeg not found. Install ffmpeg or Virtual Desktop Streamer.".into())
 }
 
+/// Compute the timestamp-scale factor and re-timed duration for the merge.
+///
+/// Video is encoded at a fixed 60fps, so its encoded duration is
+/// `frame_count/60`. The real capture rate is rarely exactly 60fps, so we scale
+/// the video timestamps by `60 / measured_fps` at merge time (`-itsscale`,
+/// copy-only — no re-encode) so the file duration matches wall-clock and audio
+/// stays in sync. Returns `(itsscale, target_duration_secs)`.
+fn retime_factor(frame_count: u64, wall_elapsed_secs: Option<f64>) -> (f64, f64) {
+    let encoded = frame_count as f64 / 60.0;
+    match wall_elapsed_secs {
+        // Only re-time with a meaningful sample; tiny clips keep the 60fps assumption.
+        Some(elapsed) if frame_count > 30 && elapsed > 1.0 => {
+            // scale = 60 / measured_fps = elapsed / encoded. Clamp to ~15–240fps
+            // so a bogus measurement can't produce an absurd stretch.
+            let scale = (elapsed / encoded).clamp(0.25, 4.0);
+            (scale, encoded * scale)
+        }
+        _ => (1.0, encoded),
+    }
+}
+
 fn merge_audio_video(
     ffmpeg_path: &PathBuf,
     video_path: &PathBuf,
-    audio_data: Option<(Vec<u8>, u32, u16)>,
-    mic_data: Option<(Vec<u8>, u32, u16)>,
+    audio_data: Option<(PathBuf, u32, u16)>,
+    mic_data: Option<(PathBuf, u32, u16)>,
     output_path: &PathBuf,
     video_duration_secs: f64,
+    itsscale: f64,
 ) -> Result<(), String> {
-    let audio_path = output_path.with_extension("sys.pcm");
-    let mic_path = output_path.with_extension("mic.pcm");
     let mut cleanup_paths: Vec<PathBuf> = Vec::new();
 
     let mut cmd = std::process::Command::new(ffmpeg_path);
-    cmd.arg("-y")
-        .arg("-i")
+    cmd.arg("-y");
+    // Scale the video input timestamps to the measured capture rate (P1).
+    if (itsscale - 1.0).abs() > 1e-6 {
+        cmd.arg("-itsscale").arg(format!("{itsscale:.6}"));
+    }
+    cmd.arg("-i")
         .arg(video_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -375,26 +388,22 @@ fn merge_audio_video(
     let has_sys = audio_data.is_some();
     let has_mic = mic_data.is_some();
 
-    // Add system audio input if present
-    if let Some((pcm, rate, ch)) = audio_data {
-        std::fs::write(&audio_path, &pcm)
-            .map_err(|e| format!("Failed to write system audio: {e}"))?;
-        cleanup_paths.push(audio_path.clone());
+    // Add system audio input if present (PCM already streamed to disk).
+    if let Some((path, rate, ch)) = audio_data {
+        cleanup_paths.push(path.clone());
         cmd.arg("-f").arg("s16le")
             .arg("-ar").arg(rate.to_string())
             .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&audio_path);
+            .arg("-i").arg(&path);
     }
 
-    // Add mic audio input if present
-    if let Some((pcm, rate, ch)) = mic_data {
-        std::fs::write(&mic_path, &pcm)
-            .map_err(|e| format!("Failed to write mic audio: {e}"))?;
-        cleanup_paths.push(mic_path.clone());
+    // Add mic audio input if present (PCM already streamed to disk).
+    if let Some((path, rate, ch)) = mic_data {
+        cleanup_paths.push(path.clone());
         cmd.arg("-f").arg("s16le")
             .arg("-ar").arg(rate.to_string())
             .arg("-ac").arg(ch.to_string())
-            .arg("-i").arg(&mic_path);
+            .arg("-i").arg(&path);
     }
 
     match (has_sys, has_mic) {

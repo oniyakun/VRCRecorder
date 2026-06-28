@@ -1,17 +1,27 @@
-use std::sync::{Arc, Mutex};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 /// Manages WASAPI loopback capture in a background thread.
+///
+/// PCM is streamed straight to a temp `.pcm` file via a dedicated writer thread
+/// instead of being accumulated in RAM, so long recordings don't grow unbounded
+/// and the realtime audio callback never reallocates a large buffer (see P2).
 pub struct AudioCapture {
     stream: Option<cpal::Stream>,
-    buffer: Arc<Mutex<Vec<u8>>>,
+    writer_thread: Option<JoinHandle<u64>>,
     sample_rate: u32,
     channels: u16,
+    pcm_path: PathBuf,
 }
 
 impl AudioCapture {
-    pub fn start() -> Result<Self, String> {
+    /// Start loopback capture, streaming s16le PCM into `pcm_path`.
+    pub fn start(pcm_path: PathBuf) -> Result<Self, String> {
         let host = cpal::default_host();
 
         let device = host
@@ -33,31 +43,47 @@ impl AudioCapture {
         };
 
         log::info!(
-            "Audio capture: {} Hz, {} channels",
+            "Audio capture: {} Hz, {} channels → {}",
             sample_rate,
-            channels
+            channels,
+            pcm_path.display()
         );
 
-        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let buf_clone = buffer.clone();
+        let file = File::create(&pcm_path)
+            .map_err(|e| format!("Failed to create audio temp file: {e}"))?;
+
+        // Writer thread drains the channel to disk. The realtime callback only
+        // sends (never blocks, never reallocates a growing buffer).
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let writer_thread = std::thread::Builder::new()
+            .name("audio-writer".into())
+            .spawn(move || {
+                let mut writer = BufWriter::new(file);
+                let mut total: u64 = 0;
+                for chunk in rx {
+                    if writer.write_all(&chunk).is_err() {
+                        break;
+                    }
+                    total += chunk.len() as u64;
+                }
+                let _ = writer.flush();
+                total
+            })
+            .map_err(|e| format!("Failed to spawn audio writer: {e}"))?;
 
         let stream = device
             .build_input_stream::<f32, _, _>(
                 stream_config,
                 move |data: &[f32], _info| {
-                    // Convert f32 samples to s16le PCM interleaved
-                    let pcm: Vec<u8> = data
-                        .iter()
-                        .flat_map(|&s| {
-                            let clamped = s.clamp(-1.0, 1.0);
-                            let sample = (clamped * 32767.0) as i16;
-                            sample.to_le_bytes()
-                        })
-                        .collect();
-
-                    if let Ok(mut buf) = buf_clone.lock() {
-                        buf.extend_from_slice(&pcm);
+                    // Convert f32 samples to s16le PCM interleaved (fixed-size
+                    // per-callback Vec — no growing shared buffer, no lock).
+                    let mut pcm = Vec::with_capacity(data.len() * 2);
+                    for &s in data {
+                        let clamped = s.clamp(-1.0, 1.0);
+                        let sample = (clamped * 32767.0) as i16;
+                        pcm.extend_from_slice(&sample.to_le_bytes());
                     }
+                    let _ = tx.send(pcm);
                 },
                 |err| {
                     log::error!("Audio capture error: {err}");
@@ -70,19 +96,11 @@ impl AudioCapture {
 
         Ok(Self {
             stream: Some(stream),
-            buffer,
+            writer_thread: Some(writer_thread),
             sample_rate,
             channels,
+            pcm_path,
         })
-    }
-
-    /// Drain all captured audio data since last call.
-    pub fn drain(&mut self) -> Vec<u8> {
-        if let Ok(mut buf) = self.buffer.lock() {
-            std::mem::take(&mut *buf)
-        } else {
-            Vec::new()
-        }
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -93,18 +111,28 @@ impl AudioCapture {
         self.channels
     }
 
-    /// Current size of the captured audio buffer in bytes (without draining).
-    pub fn buffer_size(&self) -> usize {
-        if let Ok(buf) = self.buffer.lock() {
-            buf.len()
+    /// Path of the temp PCM file this capture is writing to.
+    pub fn pcm_path(&self) -> &PathBuf {
+        &self.pcm_path
+    }
+
+    /// Stop the stream and finalize the temp file. Returns total bytes written.
+    pub fn stop(&mut self) -> u64 {
+        // Drop the stream first (stops callbacks and closes the channel sender
+        // held by the callback), then join the writer so the file is flushed.
+        self.stream = None;
+        if let Some(t) = self.writer_thread.take() {
+            t.join().unwrap_or(0)
         } else {
             0
         }
     }
+}
 
-    pub fn stop(&mut self) {
-        if let Some(stream) = self.stream.take() {
-            drop(stream);
+impl Drop for AudioCapture {
+    fn drop(&mut self) {
+        if self.writer_thread.is_some() {
+            let _ = self.stop();
         }
     }
 }

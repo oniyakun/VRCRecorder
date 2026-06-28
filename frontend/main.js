@@ -125,7 +125,10 @@
                 break;
 
             case 'ResolutionChanged':
-                status('Resolution changed - restarting...');
+                if (d.new_w && d.new_h) {
+                    $('meta-resolution').textContent = d.new_w + 'x' + d.new_h;
+                    status('Resolution changed to ' + d.new_w + 'x' + d.new_h);
+                }
                 break;
         }
     }

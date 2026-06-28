@@ -1,20 +1,28 @@
-use std::sync::{Arc, Mutex};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::mpsc::{self};
+use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 /// Manages microphone capture in a background thread.
+///
+/// Like [`AudioCapture`](crate::record::audio::AudioCapture), PCM is streamed to
+/// a temp `.pcm` file via a writer thread rather than buffered in RAM (P2).
 pub struct MicCapture {
     stream: Option<cpal::Stream>,
-    buffer: Arc<Mutex<Vec<u8>>>,
+    writer_thread: Option<JoinHandle<u64>>,
     sample_rate: u32,
     channels: u16,
     device_name: String,
+    pcm_path: PathBuf,
 }
 
 impl MicCapture {
-    /// Start capturing from the specified microphone device.
+    /// Start capturing from the specified microphone device into `pcm_path`.
     /// If `device_name` is None, uses the system default input device.
-    pub fn start(device_name: Option<&str>) -> Result<Self, String> {
+    pub fn start(device_name: Option<&str>, pcm_path: PathBuf) -> Result<Self, String> {
         let host = cpal::default_host();
 
         let device = if let Some(name) = device_name {
@@ -32,7 +40,7 @@ impl MicCapture {
             .description()
             .map(|d| d.name().to_string())
             .unwrap_or_default();
-        log::info!("Mic capture: device='{actual_name}'");
+        log::info!("Mic capture: device='{actual_name}' → {}", pcm_path.display());
 
         let config = device
             .default_input_config()
@@ -47,25 +55,39 @@ impl MicCapture {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let buf_clone = buffer.clone();
+        let file = File::create(&pcm_path)
+            .map_err(|e| format!("Failed to create mic temp file: {e}"))?;
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let writer_thread = std::thread::Builder::new()
+            .name("mic-writer".into())
+            .spawn(move || {
+                let mut writer = BufWriter::new(file);
+                let mut total: u64 = 0;
+                for chunk in rx {
+                    if writer.write_all(&chunk).is_err() {
+                        break;
+                    }
+                    total += chunk.len() as u64;
+                }
+                let _ = writer.flush();
+                total
+            })
+            .map_err(|e| format!("Failed to spawn mic writer: {e}"))?;
 
         let stream = device
             .build_input_stream::<f32, _, _>(
                 stream_config,
                 move |data: &[f32], _info| {
-                    // Convert f32 samples to s16le PCM
-                    let pcm: Vec<u8> = data
-                        .iter()
-                        .flat_map(|&s| {
-                            let clamped = s.clamp(-1.0, 1.0);
-                            let sample = (clamped * 32767.0) as i16;
-                            sample.to_le_bytes()
-                        })
-                        .collect();
-                    if let Ok(mut buf) = buf_clone.lock() {
-                        buf.extend_from_slice(&pcm);
+                    // Convert f32 samples to s16le PCM (fixed-size per-callback
+                    // Vec — no growing shared buffer, no lock).
+                    let mut pcm = Vec::with_capacity(data.len() * 2);
+                    for &s in data {
+                        let clamped = s.clamp(-1.0, 1.0);
+                        let sample = (clamped * 32767.0) as i16;
+                        pcm.extend_from_slice(&sample.to_le_bytes());
                     }
+                    let _ = tx.send(pcm);
                 },
                 |err| {
                     log::error!("Mic capture error: {err}");
@@ -78,35 +100,16 @@ impl MicCapture {
 
         Ok(Self {
             stream: Some(stream),
-            buffer,
+            writer_thread: Some(writer_thread),
             sample_rate,
             channels,
             device_name: actual_name,
+            pcm_path,
         })
-    }
-
-    /// Check if the default input device has changed.
-    pub fn device_changed(&self) -> bool {
-        let host = cpal::default_host();
-        if let Some(default) = host.default_input_device() {
-            if let Ok(desc) = default.description() {
-                return desc.name() != self.device_name;
-            }
-        }
-        false
     }
 
     pub fn device_name(&self) -> &str {
         &self.device_name
-    }
-
-    /// Drain all captured audio data since last call.
-    pub fn drain(&mut self) -> Vec<u8> {
-        if let Ok(mut buf) = self.buffer.lock() {
-            std::mem::take(&mut *buf)
-        } else {
-            Vec::new()
-        }
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -117,18 +120,26 @@ impl MicCapture {
         self.channels
     }
 
-    /// Current size of the captured audio buffer in bytes (without draining).
-    pub fn buffer_size(&self) -> usize {
-        if let Ok(buf) = self.buffer.lock() {
-            buf.len()
+    /// Path of the temp PCM file this capture is writing to.
+    pub fn pcm_path(&self) -> &PathBuf {
+        &self.pcm_path
+    }
+
+    /// Stop the stream and finalize the temp file. Returns total bytes written.
+    pub fn stop(&mut self) -> u64 {
+        self.stream = None;
+        if let Some(t) = self.writer_thread.take() {
+            t.join().unwrap_or(0)
         } else {
             0
         }
     }
+}
 
-    pub fn stop(&mut self) {
-        if let Some(stream) = self.stream.take() {
-            drop(stream);
+impl Drop for MicCapture {
+    fn drop(&mut self) {
+        if self.writer_thread.is_some() {
+            let _ = self.stop();
         }
     }
 }

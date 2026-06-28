@@ -135,13 +135,9 @@ fn poll_events(state: tauri::State<AppState>) -> Result<Vec<RenderEvent>, String
     let mut events = Vec::new();
     let rx = state.event_rx.lock().unwrap();
     while let Ok(evt) = rx.try_recv() {
-        let is_res_change = matches!(evt, RenderEvent::ResolutionChanged { .. });
+        // ResolutionChanged is informational now: the render thread recreates
+        // its GL texture in place (P9), so the app no longer relaunches.
         events.push(evt);
-        if is_res_change {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let _ = std::process::Command::new(&exe).spawn();
-            std::process::exit(0);
-        }
     }
     Ok(events)
 }
