@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::os::windows::process::CommandExt;
+use std::time::Instant;
 
 use crate::record::audio::AudioCapture;
 use crate::record::capture::PboReader;
@@ -16,6 +17,8 @@ pub struct RecordingPipeline {
     dropped_frames: u64,
     /// Path where the encoded .mp4 will be written (used by finish step).
     video_path: Option<PathBuf>,
+    /// Frame-pacing diagnostics, present only while recording.
+    timing: Option<FrameTiming>,
 }
 
 impl RecordingPipeline {
@@ -29,6 +32,7 @@ impl RecordingPipeline {
             frame_count: 0,
             dropped_frames: 0,
             video_path: None,
+            timing: None,
         }
     }
 
@@ -118,6 +122,7 @@ impl RecordingPipeline {
         self.video_path = Some(video_path);
         self.frame_count = 0;
         self.dropped_frames = 0;
+        self.timing = Some(FrameTiming::new());
 
         log::info!("Recording started: {}x{}", width, height);
         Ok(())
@@ -181,13 +186,10 @@ impl RecordingPipeline {
             log::info!("Flushed {flush_count} final frames");
         }
 
-        let total_dropped = self.dropped_frames;
-        if total_dropped > 0 {
-            log::warn!(
-                "{} frames dropped during recording ({:.1}s of video)",
-                total_dropped,
-                total_dropped as f64 / 60.0
-            );
+        // One-time frame-pacing summary (concise; see FrameTiming). Emitted
+        // before frame_count is reset below.
+        if let Some(t) = self.timing.take() {
+            t.log_summary(self.frame_count, wall_elapsed_secs);
         }
 
         // Take ownership for background finalization.
@@ -281,14 +283,14 @@ impl RecordingPipeline {
             match encoder.push_frame(rgba_data) {
                 Ok(true) => {
                     self.frame_count += 1;
-                    if self.frame_count % 120 == 0 {
-                        log::info!("{} frames captured ({} dropped)", self.frame_count, self.dropped_frames);
+                    if let Some(t) = &mut self.timing {
+                        t.on_push();
                     }
                 }
                 Ok(false) => {
                     self.dropped_frames += 1;
-                    if self.dropped_frames % 60 == 1 {
-                        log::warn!("Encoder behind: {} frames dropped so far", self.dropped_frames);
+                    if let Some(t) = &mut self.timing {
+                        t.on_drop();
                     }
                 }
                 Err(e) => {
@@ -304,6 +306,144 @@ impl Drop for RecordingPipeline {
         drop(self.encoder.take());
         if let Some(ref mut audio) = self.audio_capture {
             audio.stop();
+        }
+    }
+}
+
+// ───── Frame-pacing diagnostics (stutter detection) ─────
+//
+// Accumulates integer counters only — no per-frame log lines or allocations.
+// During recording it stays SILENT unless an interval actually had hitches or
+// dropped frames; at stop it emits one concise summary plus an inter-frame
+// histogram. This keeps the log near-empty for smooth recordings (drive-space
+// friendly for normal users) while capturing exactly what's needed to diagnose
+// a reported stutter from a user's log file. Timing uses `Instant`, which is
+// QPC-backed on Windows — the monotonic clock the research recommends.
+
+/// Inter-frame gap (ms) above which a frame counts as a "hitch" (≈1.5× a 60fps
+/// frame — at least one frame's worth of stall).
+const HITCH_MS: u64 = 25;
+/// Cadence of the problem-only interval report.
+const REPORT_SECS: u64 = 10;
+
+struct FrameTiming {
+    start: Instant,
+    last_push: Option<Instant>,
+    /// Inter-frame interval histogram, buckets in ms:
+    /// [<20, 20–33, 33–50, 50–100, 100–250, >250].
+    buckets: [u64; 6],
+    hitches: u64,
+    drops: u64,
+    max_gap_ms: u64,
+    // Per-interval accumulators (reset on each report).
+    interval_start: Instant,
+    interval_pushed: u64,
+    interval_hitches: u64,
+    interval_drops: u64,
+}
+
+impl FrameTiming {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            start: now,
+            last_push: None,
+            buckets: [0; 6],
+            hitches: 0,
+            drops: 0,
+            max_gap_ms: 0,
+            interval_start: now,
+            interval_pushed: 0,
+            interval_hitches: 0,
+            interval_drops: 0,
+        }
+    }
+
+    /// A frame was successfully handed to the encoder.
+    fn on_push(&mut self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_push {
+            let ms = now.duration_since(prev).as_millis() as u64;
+            let b = match ms {
+                0..=19 => 0,
+                20..=32 => 1,
+                33..=49 => 2,
+                50..=99 => 3,
+                100..=249 => 4,
+                _ => 5,
+            };
+            self.buckets[b] += 1;
+            if ms > HITCH_MS {
+                self.hitches += 1;
+                self.interval_hitches += 1;
+            }
+            if ms > self.max_gap_ms {
+                self.max_gap_ms = ms;
+            }
+        }
+        self.last_push = Some(now);
+        self.interval_pushed += 1;
+        self.maybe_report(now);
+    }
+
+    /// The encoder channel was full and a frame was dropped.
+    fn on_drop(&mut self) {
+        self.drops += 1;
+        self.interval_drops += 1;
+    }
+
+    /// Emit an interval line only when the interval actually had a problem, so a
+    /// smooth recording writes nothing here.
+    fn maybe_report(&mut self, now: Instant) {
+        let secs = now.duration_since(self.interval_start).as_secs();
+        if secs < REPORT_SECS {
+            return;
+        }
+        if self.interval_hitches > 0 || self.interval_drops > 0 {
+            let fps = self.interval_pushed as f64 / secs as f64;
+            let at = now.duration_since(self.start).as_secs();
+            log::warn!(
+                "Pacing@{at}s: {fps:.0} fps, {} hitches, {} encoder-drops over {secs}s",
+                self.interval_hitches,
+                self.interval_drops,
+            );
+        }
+        self.interval_start = now;
+        self.interval_pushed = 0;
+        self.interval_hitches = 0;
+        self.interval_drops = 0;
+    }
+
+    /// One-time summary at stop: real fps, drop %, hitches, worst gap, the
+    /// inter-frame histogram, and a best-effort capture-vs-encoder attribution.
+    fn log_summary(&self, frame_count: u64, wall_secs: Option<f64>) {
+        let wall = wall_secs.unwrap_or(0.0);
+        let real_fps = if wall > 0.1 { frame_count as f64 / wall } else { 0.0 };
+        let total = frame_count + self.drops;
+        let drop_pct = if total > 0 {
+            self.drops as f64 * 100.0 / total as f64
+        } else {
+            0.0
+        };
+        let b = self.buckets;
+        log::info!(
+            "Recording stats: {frame_count} frames / {wall:.1}s = {real_fps:.1} real fps; \
+             encoder drops {} ({drop_pct:.1}%); hitches(>{HITCH_MS}ms) {}, worst gap {}ms",
+            self.drops,
+            self.hitches,
+            self.max_gap_ms,
+        );
+        log::info!(
+            "Frame-interval histogram ms [<20|20-33|33-50|50-100|100-250|>250]: {} {} {} {} {} {}",
+            b[0], b[1], b[2], b[3], b[4], b[5],
+        );
+        if self.hitches > 0 || self.drops > 0 {
+            let cause = if self.drops == 0 {
+                "capture-bound — frames weren't delivered/captured in time (GPU contention or the 16ms poll); the encoder kept up"
+            } else {
+                "encoder-bound — the encoder couldn't accept frames fast enough (a lower bitrate/resolution may help)"
+            };
+            log::warn!("Frame-pacing issues detected — likely {cause}");
         }
     }
 }
