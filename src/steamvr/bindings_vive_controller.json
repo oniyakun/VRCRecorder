@@ -1,9 +1,9 @@
 {
     "action_manifest_version": 1,
     "controller_type": "vive_controller",
-    "description": "VRCRecorder default bindings for Vive controllers",
-    "interaction_profile": "",
-    "name": "VRCRecorder Default Bindings",
+    "description": "VRCRecorder default bindings for HTC Vive / Focus Vision controllers",
+    "interaction_profile": "/interaction_profiles/htc/vive_focus3_controller",
+    "name": "VRCRecorder Vive Bindings",
     "options": {},
     "category": "steamvr_input",
     "alias_info": {},
@@ -12,13 +12,13 @@
         "/actions/vrc_recorder": {
             "sources": [
                 {
-                    "path": "/user/hand/right/input/application_menu",
+                    "path": "/user/hand/right/input/b",
                     "mode": "button",
                     "parameters": {
-                        "haptic_amplitude": "0"
+                        "haptic_amplitude": "0.3"
                     },
                     "inputs": {
-                        "double": {
+                        "click": {
                             "output": "/actions/vrc_recorder/in/toggle_record"
                         }
                     }

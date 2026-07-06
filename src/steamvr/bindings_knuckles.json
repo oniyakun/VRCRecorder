@@ -2,7 +2,7 @@
     "action_manifest_version": 1,
     "controller_type": "knuckles",
     "description": "VRCRecorder default bindings for Valve Index controllers",
-    "interaction_profile": "",
+    "interaction_profile": "/interaction_profiles/valve/index_controller",
     "name": "VRCRecorder Default Bindings",
     "options": {},
     "category": "steamvr_input",

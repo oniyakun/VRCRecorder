@@ -2,7 +2,7 @@
     "action_manifest_version": 1,
     "controller_type": "oculus_touch",
     "description": "VRCRecorder default bindings for Oculus Touch controllers",
-    "interaction_profile": "",
+    "interaction_profile": "/interaction_profiles/oculus/touch_controller",
     "name": "VRCRecorder Default Bindings",
     "options": {},
     "category": "steamvr_input",

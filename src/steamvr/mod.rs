@@ -207,6 +207,10 @@ fn overlay_main(
             "bindings_vive_controller.json",
             include_str!("bindings_vive_controller.json"),
         ),
+        (
+            "bindings_pico4.json",
+            include_str!("bindings_pico4.json"),
+        ),
     ] {
         if let Err(e) = std::fs::write(cache_dir.join(name), contents) {
             log::error!("SteamVR overlay: failed to write {name}: {e}");
