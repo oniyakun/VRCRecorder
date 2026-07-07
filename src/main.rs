@@ -36,6 +36,8 @@ pub struct AppState {
     pub steamvr_auto_launch: Arc<AtomicBool>,
     pub steamvr_overlay_enabled: Arc<AtomicBool>,
     pub language: Arc<Mutex<Option<String>>>,
+    /// Sends commands (e.g. OpenBindingUI) to the SteamVR overlay thread.
+    pub overlay_cmd_tx: Mutex<mpsc::Sender<steamvr::OverlayCommand>>,
 }
 
 // ===== Tauri Commands =====
@@ -83,6 +85,16 @@ fn stop_recording(state: tauri::State<AppState>) -> Result<(), String> {
         .unwrap()
         .send(RenderCommand::StopRecording)
         .map_err(|e| format!("Failed to send command: {e}"))
+}
+
+#[tauri::command]
+fn open_binding_ui(state: tauri::State<AppState>) -> Result<(), String> {
+    state
+        .overlay_cmd_tx
+        .lock()
+        .unwrap()
+        .send(steamvr::OverlayCommand::OpenBindingUI)
+        .map_err(|e| format!("Failed to send overlay command: {e}"))
 }
 
 #[tauri::command]
@@ -277,6 +289,8 @@ fn main() {
         frame_seq: preview_frame_seq,
     });
 
+    let (overlay_cmd_tx, overlay_cmd_rx) = mpsc::channel::<steamvr::OverlayCommand>();
+
     let app_state = AppState {
         config: Mutex::new(config),
         cmd_tx: Mutex::new(cmd_tx.clone()),
@@ -288,6 +302,7 @@ fn main() {
         steamvr_auto_launch,
         steamvr_overlay_enabled,
         language: language.clone(),
+        overlay_cmd_tx: Mutex::new(overlay_cmd_tx),
     };
 
     tauri::Builder::default()
@@ -364,6 +379,7 @@ fn main() {
                 auto_launch_for_overlay.clone(),
                 steamvr_overlay_enabled_for_overlay.clone(),
                 language_for_overlay.clone(),
+                overlay_cmd_rx,
             );
 
             Ok(())
@@ -386,6 +402,7 @@ fn main() {
             get_stream_port,
             list_mic_devices,
             select_output_dir,
+            open_binding_ui,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VRCRecorder");

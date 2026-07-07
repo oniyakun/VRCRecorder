@@ -1,8 +1,8 @@
 {
     "action_manifest_version": 1,
     "controller_type": "vive_controller",
-    "description": "VRCRecorder default bindings for HTC Vive / Focus Vision controllers",
-    "interaction_profile": "/interaction_profiles/htc/vive_focus3_controller",
+    "description": "VRCRecorder default bindings for HTC Vive controllers",
+    "interaction_profile": "/interaction_profiles/htc/vive_controller",
     "name": "VRCRecorder Vive Bindings",
     "options": {},
     "category": "steamvr_input",

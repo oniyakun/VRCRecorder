@@ -70,6 +70,7 @@ const IN_GET_ACTION_SET_HANDLE: isize = 1;
 const IN_GET_ACTION_HANDLE: isize = 2;
 const IN_UPDATE_ACTION_STATE: isize = 4;
 const IN_GET_DIGITAL_ACTION_DATA: isize = 5;
+const IN_OPEN_BINDING_UI: isize = 30;
 
 // IVRApplications
 const APP_ADD_APPLICATION_MANIFEST: isize = 0;
@@ -317,6 +318,25 @@ impl VRInput {
             data,
             data_size,
             restrict_to_device
+        )
+    }
+
+    pub unsafe fn open_binding_ui(
+        &self,
+        app_key: *const u8,
+        action_set: VRActionHandle,
+        device: VRInputValueHandle,
+        show_on_desktop: bool,
+    ) -> i32 {
+        in_call!(
+            self,
+            IN_OPEN_BINDING_UI,
+            i32,
+            (*const u8, VRActionHandle, VRInputValueHandle, bool),
+            app_key,
+            action_set,
+            device,
+            show_on_desktop
         )
     }
 }

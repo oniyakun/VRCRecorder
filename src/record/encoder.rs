@@ -97,7 +97,10 @@ impl FfmpegEncoder {
         vflip: bool,
     ) -> Result<Self, String> {
         let size = format!("{width}x{height}");
-        let rate = format!("{fps}");
+        // Input is always captured at ~60 fps (Spout real-time rate).
+        // The user's fps setting controls the OUTPUT frame rate.
+        let input_rate = "60".to_string();
+        let output_rate = format!("{fps}");
 
         let enc = get_video_encoder(ffmpeg_path).map_err(|e| e.clone())?;
 
@@ -132,7 +135,7 @@ impl FfmpegEncoder {
             "-pix_fmt".into(),
             "rgba".into(),
             "-r".into(),
-            rate.clone(),
+            input_rate,
             "-i".into(),
             "-".into(),
             "-vf".into(),
@@ -145,6 +148,16 @@ impl FfmpegEncoder {
         }
         args.push("-b:v".into());
         args.push(bitrate.into());
+        // Output frame rate (user's choice, 30 or 60)
+        args.push("-r".into());
+        args.push(output_rate);
+
+        log::info!(
+            "ffmpeg: {} {} {}",
+            ffmpeg_path.display(),
+            args.join(" "),
+            output_path.display()
+        );
 
         #[allow(non_snake_case)]
         let CREATE_NO_WINDOW: u32 = 0x08000000;

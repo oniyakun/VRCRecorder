@@ -28,6 +28,8 @@ window.__I18N_EN__ = {
         bitrate_10M: "Bitrate: 10M",
         bitrate_20M: "Bitrate: 20M",
         bitrate_40M: "Bitrate: 40M",
+        fps_30: "Frame Rate: 30fps",
+        fps_60: "Frame Rate: 60fps",
         mirror: "Mirror (hflip)",
         portrait: "Portrait Mode",
         vertical_flip: "Vertical Flip"
@@ -49,7 +51,8 @@ window.__I18N_EN__ = {
     },
     system: {
         language_label: "Language",
-        steamvr_overlay: "SteamVR Overlay"
+        steamvr_overlay: "SteamVR Overlay",
+        binding_btn: "Configure Controller Binding"
     },
     meta: {
         resolution: "RESOLUTION:",

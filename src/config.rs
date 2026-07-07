@@ -23,6 +23,8 @@ pub struct AppConfig {
     // Video settings
     #[serde(default = "default_video_bitrate")]
     pub video_bitrate: String,
+    #[serde(default = "default_video_fps")]
+    pub video_fps: u32,
     #[serde(default = "default_mirror_video")]
     pub mirror_video: bool,
     #[serde(default = "default_portrait_mode")]
@@ -45,6 +47,9 @@ pub struct AppConfig {
 
 fn default_video_bitrate() -> String {
     "10M".into()
+}
+fn default_video_fps() -> u32 {
+    60
 }
 fn default_mirror_video() -> bool {
     false
@@ -103,6 +108,7 @@ impl Default for AppConfig {
             auto_stop_camera: true,
             vrchat_port: "9000".into(),
             video_bitrate: "10M".into(),
+            video_fps: 60,
             mirror_video: false,
             portrait_mode: false,
             video_vflip: false,

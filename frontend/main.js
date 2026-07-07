@@ -32,14 +32,13 @@
     function setToggle(id, on) { $(id).classList.toggle('active', on); }
     function toggleEl(id) { $(id).classList.toggle('active'); return $(id).classList.contains('active'); }
 
-    // Record button is only usable with a live source (or while already
-    // recording, so Stop is always reachable). See UXR1.
+    // Record button is always usable — the backend handles the case
+    // where no source is connected (sends camera OSC, defers recording).
     function updateRecordBtn() {
         var btn = $('recordBtn');
         if (!btn) return;
-        var usable = state.connected || state.recording;
-        btn.classList.toggle('disabled', !usable);
-        btn.title = usable ? '' : 'Connect a source before recording';
+        btn.classList.toggle('disabled', false);
+        btn.title = '';
     }
 
     // ---- Event dispatch (from polled events) ----
@@ -203,7 +202,8 @@
     window.connectSender = function(name) { invoke('connect_sender', { name: name }).catch(function(e) { status(t('status.error_connect', {error: e})); }); };
     window.toggleRecord = function() {
         if (state.recording) { invoke('stop_recording').catch(function(e) { status(t('status.error_stop', {error: e})); }); return; }
-        if (!state.connected) { status('Connect a source before recording'); return; }
+        // Always allow start — backend sends camera OSC first and defers
+        // recording until auto-connect picks up the source.
         invoke('start_recording').catch(function(e) { status(t('status.error_start', {error: e})); });
     };
 
@@ -283,6 +283,10 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
+    $('binding-btn').addEventListener('click', function() {
+        invoke('open_binding_ui').catch(function(e) { status('Failed to open binding UI: ' + e); });
+    });
+
     $('preview-row').addEventListener('click', function() {
         if (!state.config) return;
         state.config.preview_enabled = toggleEl('preview-toggle');
@@ -325,6 +329,11 @@
         if (!state.config) return;
         state.config.video_bitrate = this.value;
         $('meta-bitrate').textContent = this.value;
+        invoke('update_config', { config: state.config }).catch(function() {});
+    });
+    $('fps-select').addEventListener('change', function() {
+        if (!state.config) return;
+        state.config.video_fps = parseInt(this.value);
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
@@ -373,6 +382,7 @@
         setToggle('auto-camera-toggle', cfg.auto_camera !== false);
         setToggle('auto-stop-camera-toggle', cfg.auto_stop_camera !== false);
         $('bitrate-select').value = cfg.video_bitrate || '10M';
+        $('fps-select').value = cfg.video_fps || 60;
         setToggle('mirror-toggle', cfg.mirror_video);
         setToggle('dock-mirror', cfg.mirror_video);
         setToggle('portrait-toggle', cfg.portrait_mode);

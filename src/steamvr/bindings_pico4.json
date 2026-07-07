@@ -1,7 +1,7 @@
 {
     "action_manifest_version": 1,
     "controller_type": "pico4_controller",
-    "description": "VRCRecorder default bindings for PICO 3 / 4 / 4 Pro / 4 Ultra controllers",
+    "description": "VRCRecorder default bindings for PICO 4 controllers",
     "interaction_profile": "/interaction_profiles/bytedance/pico4_controller",
     "name": "VRCRecorder PICO Bindings",
     "options": {},

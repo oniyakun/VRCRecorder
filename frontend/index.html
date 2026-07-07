@@ -203,6 +203,10 @@
                     <option value="20M" data-i18n="video.bitrate_20M">Bitrate: 20M</option>
                     <option value="40M" data-i18n="video.bitrate_40M">Bitrate: 40M</option>
                 </select>
+                <select class="select-dropdown" id="fps-select" style="margin-top:8px;">
+                    <option value="30" data-i18n="video.fps_30">Frame Rate: 30fps</option>
+                    <option value="60" data-i18n="video.fps_60">Frame Rate: 60fps</option>
+                </select>
                 <div class="toggle-row" id="mirror-row"><span data-i18n="video.mirror">Mirror (hflip)</span><div class="toggle" id="mirror-toggle"></div></div>
                 <div class="toggle-row" id="portrait-row"><span data-i18n="video.portrait">Portrait Mode</span><div class="toggle" id="portrait-toggle"></div></div>
                 <div class="toggle-row" id="vflip-row"><span data-i18n="video.vertical_flip">Vertical Flip</span><div class="toggle" id="vflip-toggle"></div></div>
@@ -257,6 +261,9 @@
                 <div class="toggle-row" id="steamvr-launch-row">
                     <span>Auto-launch SteamVR</span>
                     <div class="toggle" id="steamvr-launch-toggle"></div>
+                </div>
+                <div style="margin-top:8px;">
+                    <button id="binding-btn" data-i18n="system.binding_btn" style="width:100%;padding:6px 12px;background:#333;color:#ccc;border:1px solid #555;border-radius:4px;cursor:pointer;font-size:12px;">Configure Controller Binding</button>
                 </div>
             </div>
             <div class="setting-group">

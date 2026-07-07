@@ -81,6 +81,10 @@ struct RenderState {
     is_recording: Arc<AtomicBool>,
     recording_start: Option<Instant>,
 
+    // Deferred start: when auto_camera is enabled but no source yet,
+    // we send the OSC signal first and wait for the source to appear.
+    pending_start_recording: bool,
+
     // Preview delivery
     last_preview_sent: Option<Instant>,
 
@@ -124,6 +128,7 @@ impl RenderState {
             recording: false,
             is_recording,
             recording_start: None,
+            pending_start_recording: false,
             last_preview_sent: None,
             last_sender_scan: None,
             last_sender_list: Vec::new(),
@@ -200,6 +205,7 @@ impl RenderState {
     }
 
     fn disconnect_sender(&mut self) {
+        self.pending_start_recording = false;
         self.spout_stream = None;
         self.spout_tex = None;
         self.spout_tex_dims = None;
@@ -216,15 +222,16 @@ impl RenderState {
 
     // ---- Recording ----
 
-    fn recording_params(&self) -> (u32, u32, String, bool, bool, bool) {
+    fn recording_params(&self) -> (u32, u32, f64, String, bool, bool, bool) {
         let (w, h) = self
             .spout_stream
             .as_ref()
             .and_then(|s| s.info.as_ref())
             .map(|i| (i.width, i.height))
             .unwrap_or((1920, 1080));
+        let fps = self.config.video_fps as f64;
         (
-            w, h,
+            w, h, fps,
             self.config.video_bitrate.clone(),
             self.config.mirror_video,
             self.config.portrait_mode,
@@ -234,15 +241,33 @@ impl RenderState {
 
     fn start_recording(&mut self) {
         if self.recording { return; }
+        // Send camera OSC FIRST — this tells VRChat to start streaming the
+        // Spout camera, so that auto-connect can pick up the source. Without
+        // this, we have a chicken-and-egg deadlock: recording needs a source,
+        // but the source only appears after recording triggers the OSC signal.
+        self.send_camera_osc();
         // Refuse to start without a live source — otherwise no frames are ever
         // captured and the encoder is left half-initialized (see UXR1).
         if self.spout_tex.is_none() {
+            // If auto_camera is enabled, the OSC signal above will cause
+            // VRChat to start streaming shortly. Defer the actual recording
+            // start until auto-connect picks up the source.
+            if self.config.auto_camera {
+                self.pending_start_recording = true;
+                log::info!("Recording deferred: waiting for camera source (auto_camera)");
+                return;
+            }
             let _ = self.event_tx.send(RenderEvent::Error {
                 message: "Connect a source before recording".into(),
             });
             log::warn!("Start recording ignored: no source connected");
             return;
         }
+        self.do_start_recording();
+    }
+
+    fn do_start_recording(&mut self) {
+        if self.recording { return; }
         // Auto-disable preview to save resources for recording
         if self.config.preview_enabled {
             self.config.preview_enabled = false;
@@ -260,12 +285,11 @@ impl RenderState {
                 mic_enabled: self.config.mic_enabled,
             });
         }
-        // Send camera OSC in background
-        self.send_camera_osc();
-        let (w, h, bitrate, mirror, portrait, vflip) = self.recording_params();
+        self.pending_start_recording = false;
+        let (w, h, fps, bitrate, mirror, portrait, vflip) = self.recording_params();
         if let Some(gl) = self.gl.as_ref() {
             match self.recording_pipeline.start(
-                gl, w, h, &bitrate, mirror, portrait, vflip,
+                gl, w, h, fps, &bitrate, mirror, portrait, vflip,
                 self.config.mic_enabled,
                 self.config.mic_device.as_deref(),
             ) {
@@ -285,6 +309,7 @@ impl RenderState {
     }
 
     fn stop_recording(&mut self) {
+        self.pending_start_recording = false;
         if !self.recording { return; }
         // Always finalize the encoder, even if there is no current texture —
         // otherwise the pipeline is left half-initialized and recording wedges
@@ -577,6 +602,11 @@ impl RenderState {
                 .unwrap_or_else(|| senders[0].clone());
             log::info!("Auto-connecting to sender: {target}");
             self.connect_sender(&target);
+        }
+        // If recording was deferred waiting for the camera source, start now.
+        if self.pending_start_recording && self.spout_tex.is_some() {
+            log::info!("Camera source now available — starting deferred recording");
+            self.do_start_recording();
         }
         self.last_sender_scan = Some(now);
     }

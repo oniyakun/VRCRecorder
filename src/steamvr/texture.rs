@@ -10,12 +10,12 @@ const BG: [u8; 3] = [24, 24, 28];
 const GREEN: [u8; 3] = [76, 175, 80];
 const RED: [u8; 3] = [255, 59, 48];
 const WHITE: [u8; 3] = [220, 220, 224];
-const DIM: [u8; 3] = [100, 100, 108];
 
 /// Generate a 512x256 RGBA PNG for the dashboard overlay.
 /// `is_recording` controls the status indicator color and text.
-/// `language` selects translated strings (currently ASCII-only due to pixel font limitations).
-pub fn generate(is_recording: bool, language: &str) -> Vec<u8> {
+/// `has_binding`: when false, shows a prominent guidance message to open SteamVR binding UI;
+/// when true, hint is hidden (clean overlay — just app name + status).
+pub fn generate(is_recording: bool, language: &str, has_binding: bool) -> Vec<u8> {
     let mut img = RgbaImage::from_pixel(W, H, image::Rgba([BG[0], BG[1], BG[2], 255]));
 
     // Status dot (left side, vertically centered)
@@ -26,12 +26,10 @@ pub fn generate(is_recording: bool, language: &str) -> Vec<u8> {
     // NOTE: The pixel font only supports A-Z, 0-9, and space.
     // CJK characters cannot be rendered. If a CJK pixel font is added later,
     // update this match to return native-language strings.
-    let (app_label, status_text, hint) = match language {
-        // All languages use ASCII for now due to pixel font limitation
+    let (app_label, status_text) = match language {
         _ => (
             "VRCRecorder",
             if is_recording { "RECORDING" } else { "READY" },
-            "Bind toggle_record action to a controller button",
         ),
     };
 
@@ -41,8 +39,14 @@ pub fn generate(is_recording: bool, language: &str) -> Vec<u8> {
     // Status text
     draw_text(&mut img, 140, 130, status_text, color, 3);
 
-    // Hint text
-    draw_text(&mut img, 24, 210, hint, DIM, 1);
+    // Hint: only shown when no binding exists (first-run guidance)
+    if !has_binding {
+        draw_text(
+            &mut img, 24, 210,
+            "NO BINDING — Open SteamVR Controller Settings",
+            WHITE, 1,
+        );
+    }
 
     // Encode PNG
     let mut buf = Vec::new();

@@ -28,6 +28,8 @@ window.__I18N_JA__ = {
         bitrate_10M: "ビットレート: 10M",
         bitrate_20M: "ビットレート: 20M",
         bitrate_40M: "ビットレート: 40M",
+        fps_30: "フレームレート: 30fps",
+        fps_60: "フレームレート: 60fps",
         mirror: "ミラー (水平反転)",
         portrait: "ポートレートモード",
         vertical_flip: "垂直反転"
@@ -49,7 +51,8 @@ window.__I18N_JA__ = {
     },
     system: {
         language_label: "言語",
-        steamvr_overlay: "SteamVR オーバーレイ"
+        steamvr_overlay: "SteamVR オーバーレイ",
+        binding_btn: "コントローラー割り当てを設定"
     },
     meta: {
         resolution: "解像度:",

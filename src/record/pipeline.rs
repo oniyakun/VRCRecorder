@@ -49,6 +49,7 @@ impl RecordingPipeline {
         gl: &glow::Context,
         width: u32,
         height: u32,
+        fps: f64,
         bitrate: &str,
         mirror: bool,
         portrait: bool,
@@ -75,7 +76,7 @@ impl RecordingPipeline {
             &video_path,
             width,
             height,
-            60.0,
+            fps,
             bitrate,
             mirror,
             portrait,
@@ -494,6 +495,7 @@ fn find_ffmpeg() -> Result<PathBuf, String> {
 /// copy-only — no re-encode) so the file duration matches wall-clock and audio
 /// stays in sync. Returns `(itsscale, target_duration_secs)`.
 fn retime_factor(frame_count: u64, wall_elapsed_secs: Option<f64>) -> (f64, f64) {
+    // Always 60 — the rawvideo input rate, matching Spout's capture cadence
     let encoded = frame_count as f64 / 60.0;
     match wall_elapsed_secs {
         // Only re-time with a meaningful sample; tiny clips keep the 60fps assumption.

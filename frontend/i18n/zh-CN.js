@@ -28,6 +28,8 @@ window.__I18N_ZH_CN__ = {
         bitrate_10M: "比特率: 10M",
         bitrate_20M: "比特率: 20M",
         bitrate_40M: "比特率: 40M",
+        fps_30: "帧率: 30fps",
+        fps_60: "帧率: 60fps",
         mirror: "镜像 (水平翻转)",
         portrait: "竖屏模式",
         vertical_flip: "垂直翻转"
@@ -49,7 +51,8 @@ window.__I18N_ZH_CN__ = {
     },
     system: {
         language_label: "语言",
-        steamvr_overlay: "SteamVR 叠加层"
+        steamvr_overlay: "SteamVR 叠加层",
+        binding_btn: "配置控制器绑定"
     },
     meta: {
         resolution: "分辨率:",

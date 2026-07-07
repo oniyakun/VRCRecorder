@@ -29,6 +29,13 @@ use ffi::{
 const APP_KEY: &str = "com.vrc-recorder.overlay";
 const ACTION_MANIFEST_FILE: &str = "steamvr_action_manifest.json";
 
+/// Commands sent from the frontend to the SteamVR overlay thread.
+#[derive(Debug)]
+pub enum OverlayCommand {
+    /// Open the SteamVR controller binding UI on desktop.
+    OpenBindingUI,
+}
+
 // Overlay input method: Mouse
 const VROVERLAY_INPUT_METHOD_MOUSE: i32 = 2;
 // Flag for smooth scrolling
@@ -42,6 +49,7 @@ pub fn spawn_overlay(
     auto_launch: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     language: Arc<Mutex<Option<String>>>,
+    overlay_cmd_rx: mpsc::Receiver<OverlayCommand>,
 ) {
     enabled.store(config.steamvr_overlay, Ordering::Relaxed);
 
@@ -60,6 +68,7 @@ pub fn spawn_overlay(
                     auto_launch.clone(),
                     enabled.clone(),
                     language.clone(),
+                    &overlay_cmd_rx,
                 );
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
@@ -73,6 +82,7 @@ fn overlay_main(
     auto_launch: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     language: Arc<Mutex<Option<String>>>,
+    overlay_cmd_rx: &mpsc::Receiver<OverlayCommand>,
 ) {
     // ---- Step 1: Load DLL (retry until SteamVR is available) ----
     let dll = loop {
@@ -173,23 +183,19 @@ fn overlay_main(
 
     log::info!("SteamVR overlay: interfaces obtained OK");
 
-    // ---- Step 4: Extract manifests to cache dir ----
-    log::info!("SteamVR overlay: step 4 - extracting manifests...");
-    let cache_dir = dirs::cache_dir()
+    // ---- Step 4: Write manifests to persistent data dir ----
+    log::info!("SteamVR overlay: step 4 - writing manifests...");
+    let data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("vrc-recorder");
-    let _ = std::fs::create_dir_all(&cache_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
 
-    let manifest_path = cache_dir.join("manifest.vrmanifest");
-    let action_manifest_path = cache_dir.join(ACTION_MANIFEST_FILE);
+    let manifest_path = data_dir.join("manifest.vrmanifest");
+    let action_manifest_path = data_dir.join(ACTION_MANIFEST_FILE);
 
     if let Err(e) = write_manifest(&manifest_path, &action_manifest_path) {
         log::error!("SteamVR overlay: failed to write manifest.vrmanifest: {e}");
     }
-    log::info!(
-        "SteamVR overlay: step 4 done, manifest at {}",
-        manifest_path.display()
-    );
 
     if let Err(e) = std::fs::write(&action_manifest_path, include_str!("action_manifest.json")) {
         log::error!("SteamVR overlay: failed to write action_manifest.json: {e}");
@@ -212,11 +218,11 @@ fn overlay_main(
             include_str!("bindings_pico4.json"),
         ),
     ] {
-        if let Err(e) = std::fs::write(cache_dir.join(name), contents) {
+        if let Err(e) = std::fs::write(data_dir.join(name), contents) {
             log::error!("SteamVR overlay: failed to write {name}: {e}");
         }
     }
-    let tex_path = cache_dir.join("steamvr_overlay.png");
+    let tex_path = data_dir.join("steamvr_overlay.png");
     log::info!(
         "SteamVR overlay: step 4 done, action manifest at {}",
         action_manifest_path.display()
@@ -318,7 +324,7 @@ fn overlay_main(
         .unwrap()
         .clone()
         .unwrap_or_else(|| "en".to_string());
-    let initial_tex = texture::generate(false, &initial_lang);
+    let initial_tex = texture::generate(false, &initial_lang, false);
     if std::fs::write(&tex_path, &initial_tex).is_ok() {
         let tex_cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
         let tex_ptr = tex_cstr.as_ptr() as *const u8;
@@ -354,6 +360,9 @@ fn overlay_main(
         .unwrap()
         .clone()
         .unwrap_or_else(|| "en".to_string());
+    // Track whether a binding exists (for overlay texture hint).
+    let mut has_binding = false;
+    let mut was_has_binding = false;
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(11));
@@ -379,6 +388,11 @@ fn overlay_main(
                             log::info!("SteamVR overlay: VREvent_Quit — shutting down");
                             unsafe {
                                 (dll.vr_shutdown)();
+                            }
+                            // Follow SteamVR lifecycle: exit app when SteamVR quits
+                            if auto_launch.load(Ordering::Relaxed) {
+                                log::info!("SteamVR overlay: auto_launch enabled, exiting app");
+                                std::process::exit(0);
                             }
                             return;
                         }
@@ -424,19 +438,44 @@ fn overlay_main(
                     break;
                 }
             }
+
+            // Track binding status for overlay hint
+            has_binding = data.b_active;
         }
 
-        // Update texture when recording state or language changes
+        // Process overlay commands from frontend
+        while let Ok(cmd) = overlay_cmd_rx.try_recv() {
+            match cmd {
+                OverlayCommand::OpenBindingUI => {
+                    log::info!("SteamVR overlay: opening binding UI (user requested)");
+                    unsafe {
+                        let err = input.open_binding_ui(
+                            std::ptr::null(),       // null = current app
+                            action_set_handle,      // jump to our action set
+                            0,                      // no specific device
+                            true,                   // show on desktop
+                        );
+                        if err != 0 {
+                            log::warn!("SteamVR overlay: OpenBindingUI returned error={err}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update texture when recording state, language, or binding status changes
         let now_recording = is_recording.load(Ordering::Relaxed);
         let now_lang = language
             .lock()
             .unwrap()
             .clone()
             .unwrap_or_else(|| "en".to_string());
-        if now_recording != was_recording || now_lang != was_lang {
+        let has_binding_changed = has_binding != was_has_binding;
+        if now_recording != was_recording || now_lang != was_lang || has_binding_changed {
             was_recording = now_recording;
             was_lang = now_lang.clone();
-            let tex = texture::generate(now_recording, &now_lang);
+            was_has_binding = has_binding;
+            let tex = texture::generate(now_recording, &now_lang, has_binding);
             if std::fs::write(&tex_path, &tex).is_ok() {
                 let cstr = std::ffi::CString::new(tex_path.to_string_lossy().as_bytes()).unwrap();
                 let ptr = cstr.as_ptr() as *const u8;
@@ -505,15 +544,12 @@ fn register_application_manifest(
     applications: &ffi::VRApplications,
     manifest_path: &std::path::Path,
 ) {
-    let app_key = std::ffi::CString::new(APP_KEY).unwrap();
+    let _app_key = std::ffi::CString::new(APP_KEY).unwrap();
     let manifest = std::ffi::CString::new(manifest_path.to_string_lossy().as_bytes()).unwrap();
 
     unsafe {
-        if applications.is_application_installed(app_key.as_ptr() as *const u8) {
-            log::info!("SteamVR overlay: application manifest already installed");
-            return;
-        }
-
+        // Always (re-)register — OpenVR deduplicates by app_key internally.
+        // This ensures the manifest path is up-to-date after upgrades or path changes.
         let err = applications.add_application_manifest(manifest.as_ptr() as *const u8, false);
         if err == 0 {
             log::info!("SteamVR overlay: application manifest registered");
