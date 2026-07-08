@@ -51,7 +51,7 @@ window.__I18N_JA__ = {
     },
     system: {
         language_label: "言語",
-        steamvr_overlay: "SteamVR オーバーレイ",
+        steamvr_link: "SteamVR 連動",
         binding_btn: "コントローラー割り当てを設定"
     },
     meta: {

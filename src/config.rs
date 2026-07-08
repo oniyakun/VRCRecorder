@@ -39,8 +39,6 @@ pub struct AppConfig {
     pub mic_device: Option<String>,
     #[serde(default = "default_steamvr_overlay")]
     pub steamvr_overlay: bool,
-    #[serde(default = "default_steamvr_auto_launch")]
-    pub steamvr_auto_launch: bool,
     #[serde(default)]
     pub language: Option<String>,
 }
@@ -69,9 +67,6 @@ fn default_mic_enabled() -> bool {
 fn default_steamvr_overlay() -> bool {
     true
 }
-fn default_steamvr_auto_launch() -> bool {
-    false
-}
 
 fn default_window_width() -> u32 {
     1280
@@ -99,7 +94,9 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             last_sender: None,
-            output_dir: dirs::video_dir().unwrap_or_else(|| PathBuf::from(".")),
+            output_dir: dirs::video_dir()
+                .map(|p| p.join("VRCRecorder"))
+                .unwrap_or_else(|| PathBuf::from(".")),
             window_width: 1280,
             window_height: 720,
             osc_enabled: true,
@@ -116,7 +113,6 @@ impl Default for AppConfig {
             mic_enabled: true,
             mic_device: None,
             steamvr_overlay: true,
-            steamvr_auto_launch: false,
             language: None,
         }
     }

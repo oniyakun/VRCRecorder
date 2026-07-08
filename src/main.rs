@@ -33,7 +33,6 @@ pub struct AppState {
     pub mjpeg_port: u16,
     /// Whether to auto-launch SteamVR if not running. Shared live with the
     /// SteamVR overlay thread so toggling it in the UI takes effect immediately.
-    pub steamvr_auto_launch: Arc<AtomicBool>,
     pub steamvr_overlay_enabled: Arc<AtomicBool>,
     pub language: Arc<Mutex<Option<String>>>,
     /// Sends commands (e.g. OpenBindingUI) to the SteamVR overlay thread.
@@ -106,18 +105,12 @@ fn get_config(state: tauri::State<AppState>) -> Result<AppConfig, String> {
 #[tauri::command]
 fn update_config(state: tauri::State<AppState>, config: AppConfig) -> Result<(), String> {
     let render_config = config.clone();
-    let steamvr_auto_launch = config.steamvr_auto_launch;
 
     {
         let mut cfg = state.config.lock().unwrap();
         *cfg = config;
         cfg.save();
     }
-
-    // Push the auto-launch preference to the SteamVR overlay thread live.
-    state
-        .steamvr_auto_launch
-        .store(steamvr_auto_launch, Ordering::Relaxed);
 
     state
         .steamvr_overlay_enabled
@@ -256,9 +249,6 @@ fn main() {
     // Recording state flag shared with SteamVR overlay thread
     let is_recording = Arc::new(AtomicBool::new(false));
 
-    // Auto-launch-SteamVR flag, shared live with the overlay thread
-    let steamvr_auto_launch = Arc::new(AtomicBool::new(config.steamvr_auto_launch));
-
     // Shared preview buffer (render thread writes, protocol handler reads)
     let preview_buf = Arc::new(Mutex::new(Vec::new()));
     let preview_dims = Arc::new(Mutex::new((0u32, 0u32)));
@@ -268,7 +258,6 @@ fn main() {
 
     // Clone before moving into render thread / setup closure
     let is_recording_for_overlay = is_recording.clone();
-    let auto_launch_for_overlay = steamvr_auto_launch.clone();
     let steamvr_overlay_enabled_for_overlay = steamvr_overlay_enabled.clone();
     let language_for_overlay = language.clone();
 
@@ -299,7 +288,6 @@ fn main() {
         preview_buf,
         preview_dims,
         mjpeg_port,
-        steamvr_auto_launch,
         steamvr_overlay_enabled,
         language: language.clone(),
         overlay_cmd_tx: Mutex::new(overlay_cmd_tx),
@@ -376,7 +364,6 @@ fn main() {
                 overlay_config,
                 overlay_cmd_tx,
                 is_recording_for_overlay.clone(),
-                auto_launch_for_overlay.clone(),
                 steamvr_overlay_enabled_for_overlay.clone(),
                 language_for_overlay.clone(),
                 overlay_cmd_rx,

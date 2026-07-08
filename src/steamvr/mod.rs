@@ -23,7 +23,7 @@ use crate::config::AppConfig;
 use ffi::{
     IVRAPPLICATIONS_VERSION, IVRINPUT_VERSION, IVROVERLAY_VERSION, InputDigitalActionData,
     VR_APPLICATION_OVERLAY, VRActiveActionSet, VREVENT_DASHBOARD_ACTIVATED, VREVENT_QUIT, VREvent,
-    get_interface, launch_steamvr, load_openvr,
+    get_interface, load_openvr,
 };
 
 const APP_KEY: &str = "com.vrc-recorder.overlay";
@@ -46,7 +46,6 @@ pub fn spawn_overlay(
     config: AppConfig,
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
-    auto_launch: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     language: Arc<Mutex<Option<String>>>,
     overlay_cmd_rx: mpsc::Receiver<OverlayCommand>,
@@ -65,7 +64,6 @@ pub fn spawn_overlay(
                 overlay_main(
                     cmd_tx.clone(),
                     is_recording.clone(),
-                    auto_launch.clone(),
                     enabled.clone(),
                     language.clone(),
                     &overlay_cmd_rx,
@@ -79,7 +77,6 @@ pub fn spawn_overlay(
 fn overlay_main(
     cmd_tx: mpsc::Sender<RenderCommand>,
     is_recording: Arc<AtomicBool>,
-    auto_launch: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     language: Arc<Mutex<Option<String>>>,
     overlay_cmd_rx: &mpsc::Receiver<OverlayCommand>,
@@ -101,10 +98,6 @@ fn overlay_main(
     log::info!("SteamVR overlay: DLL loaded");
 
     // ---- Step 2: Init OpenVR as overlay application ----
-    // OpenVR-AdvancedSettings uses VRApplication_Overlay with CreateDashboardOverlay successfully.
-    // While VR_InitInternal keeps failing, SteamVR isn't running yet; if the user enabled
-    // auto-launch, start it once via vrstartup.exe and keep retrying until it comes up.
-    let mut launch_attempted = false;
     loop {
         if !enabled.load(Ordering::Relaxed) {
             log::info!("SteamVR overlay disabled before VR init");
@@ -116,14 +109,6 @@ fn overlay_main(
             let mut error: i32 = 0;
             let vr = (dll.vr_init)(&mut error, VR_APPLICATION_OVERLAY);
             if vr.is_null() {
-                // Read the flag live so toggling it in the UI takes effect while we wait.
-                if !launch_attempted && auto_launch.load(Ordering::Relaxed) {
-                    launch_attempted = true;
-                    match launch_steamvr() {
-                        Ok(()) => log::info!("SteamVR overlay: auto-launching SteamVR (vrstartup.exe)"),
-                        Err(e) => log::warn!("SteamVR overlay: auto-launch failed: {e}"),
-                    }
-                }
                 log::info!(
                     "SteamVR overlay: VR_InitInternal failed (error={error}) — retrying in 3s"
                 );
@@ -385,16 +370,11 @@ fn overlay_main(
                 ) {
                     match event.event_type {
                         VREVENT_QUIT => {
-                            log::info!("SteamVR overlay: VREvent_Quit — shutting down");
+                            log::info!("SteamVR overlay: VREvent_Quit — exiting app");
                             unsafe {
                                 (dll.vr_shutdown)();
                             }
-                            // Follow SteamVR lifecycle: exit app when SteamVR quits
-                            if auto_launch.load(Ordering::Relaxed) {
-                                log::info!("SteamVR overlay: auto_launch enabled, exiting app");
-                                std::process::exit(0);
-                            }
-                            return;
+                            std::process::exit(0);
                         }
                         VREVENT_DASHBOARD_ACTIVATED => {
                             log::info!("SteamVR overlay: dashboard activated");

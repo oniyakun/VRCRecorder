@@ -51,7 +51,7 @@ window.__I18N_EN__ = {
     },
     system: {
         language_label: "Language",
-        steamvr_overlay: "SteamVR Overlay",
+        steamvr_link: "SteamVR Link",
         binding_btn: "Configure Controller Binding"
     },
     meta: {

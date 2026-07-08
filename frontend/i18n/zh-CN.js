@@ -51,7 +51,7 @@ window.__I18N_ZH_CN__ = {
     },
     system: {
         language_label: "语言",
-        steamvr_overlay: "SteamVR 叠加层",
+        steamvr_link: "SteamVR 联动",
         binding_btn: "配置控制器绑定"
     },
     meta: {

@@ -277,12 +277,6 @@
         invoke('update_config', { config: state.config }).catch(function() {});
     });
 
-    $('steamvr-launch-row').addEventListener('click', function() {
-        if (!state.config) return;
-        state.config.steamvr_auto_launch = toggleEl('steamvr-launch-toggle');
-        invoke('update_config', { config: state.config }).catch(function() {});
-    });
-
     $('binding-btn').addEventListener('click', function() {
         invoke('open_binding_ui').catch(function(e) { status('Failed to open binding UI: ' + e); });
     });
@@ -391,7 +385,6 @@
         setToggle('dock-vflip', cfg.video_vflip);
         setToggle('preview-toggle', cfg.preview_enabled === true);
         setToggle('steamvr-toggle', cfg.steamvr_overlay !== false);
-        setToggle('steamvr-launch-toggle', cfg.steamvr_auto_launch === true);
         setToggle('mic-toggle', cfg.mic_enabled);
         $('mic-select').style.display = cfg.mic_enabled ? '' : 'none';
         $('mic-select').value = cfg.mic_device || '';
