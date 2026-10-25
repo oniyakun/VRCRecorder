@@ -1,3 +1,5 @@
+<img width="1448" height="1086" alt="2b83b047-5952-42a4-ace6-7edbd36c6a85(1)" src="https://github.com/user-attachments/assets/4b2dfc1b-fca2-4927-8e61-57ccc332fc28" />
+
 # VRCRecorder
 
 VRCRecorder 是一款用于快速方便的录制 VRChat 相机画面的桌面程序。
